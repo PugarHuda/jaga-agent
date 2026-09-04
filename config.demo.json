@@ -1,0 +1,13 @@
+{
+  "mcp": { "command": "node", "args": ["mock-mcp.mjs"] },
+  "tools": { "account": "get_account", "prices": "get_prices", "order": "place_order" },
+  "intervalSec": 3,
+  "rules": {
+    "quote": "USDC",
+    "maxPositionPct": 40,
+    "maxDrawdownPct": 10,
+    "stopLossPct": 5,
+    "minTradeUsd": 10,
+    "mode": "execute"
+  }
+}

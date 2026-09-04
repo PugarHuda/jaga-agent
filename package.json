@@ -1,0 +1,18 @@
+{
+  "name": "jaga",
+  "version": "1.0.0",
+  "description": "Jaga — an AI risk-guardian agent for Binance Agent OS (MCP)",
+  "type": "module",
+  "main": "jaga.mjs",
+  "scripts": {
+    "demo": "node jaga.mjs --config config.demo.json",
+    "once": "node jaga.mjs --config config.demo.json --once",
+    "start": "node jaga.mjs --config config.json",
+    "test": "node test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.24.0"
+  }
+}

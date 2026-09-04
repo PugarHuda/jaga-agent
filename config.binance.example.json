@@ -1,0 +1,17 @@
+{
+  "_comment": "Copy to config.json and point it at your Binance MCP server. Tool names are remappable to whatever your MCP server exposes — no code changes needed. Use a dedicated Agent OS subaccount with a small balance.",
+  "mcp": {
+    "url": "https://YOUR-BINANCE-MCP-ENDPOINT/mcp",
+    "_or_stdio": { "command": "npx", "args": ["-y", "your-binance-mcp"], "env": { "BINANCE_API_KEY": "...", "BINANCE_API_SECRET": "..." } }
+  },
+  "tools": { "account": "binance_get_account", "prices": "binance_get_ticker", "order": "binance_create_order" },
+  "intervalSec": 30,
+  "rules": {
+    "quote": "USDC",
+    "maxPositionPct": 30,
+    "maxDrawdownPct": 10,
+    "stopLossPct": 8,
+    "minTradeUsd": 10,
+    "mode": "propose"
+  }
+}

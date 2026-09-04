@@ -83,43 +83,59 @@ async function alert(cfg, text) {
   }
 }
 
-// --- Claude: incident narration + periodic threat assessment ---------------
-async function askClaude(system, payload, maxTokens = 4096) {
-  const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic();
-  const response = await client.beta.messages.create({
-    model: "claude-opus-5",
-    max_tokens: maxTokens,
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    system,
-    messages: [{ role: "user", content: JSON.stringify(payload) }],
+// --- LLM analyst: incident narration + periodic threat assessment ----------
+// Provider-agnostic (OpenAI-compatible chat completions): works with OpenRouter,
+// Venice AI, or any compatible endpoint. Configure via env:
+//   LLM_API_KEY (or OPENROUTER_API_KEY / VENICE_API_KEY)
+//   LLM_BASE_URL (default https://openrouter.ai/api/v1; Venice: https://api.venice.ai/api/v1)
+//   LLM_MODEL    (default openrouter/auto)
+// The LLM only ever narrates — it has no path to the executor.
+async function askLLM(cfg, system, payload, maxTokens = 600) {
+  const key = process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || process.env.VENICE_API_KEY;
+  if (!key) return null;
+  const base = process.env.LLM_BASE_URL || cfg.llm?.baseUrl || "https://openrouter.ai/api/v1";
+  const model = process.env.LLM_MODEL || cfg.llm?.model || "openrouter/auto";
+  const res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: JSON.stringify(payload) },
+      ],
+    }),
   });
-  if (response.stop_reason === "refusal") return null;
-  return response.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return (await res.json()).choices?.[0]?.message?.content ?? null;
 }
 
-async function narrate(snapshot, violations, actions, mode) {
+async function narrate(cfg, snapshot, violations, actions, mode) {
   const plain = violations.map((v) => `[${v.rule}] ${v.detail}`).join("\n");
   try {
     return (
-      (await askClaude(
+      (await askLLM(
+        cfg,
         "You are Jaga, a crypto portfolio risk guardian. Write a terse incident report (max 120 words): what tripped, what action is being taken, and one sentence of market-context advice. No hedging, no disclaimers.",
         { snapshot, violations, actions, mode }
       )) ?? plain
     );
-  } catch {
-    return plain; // no credentials or API unreachable — deterministic report still ships
+  } catch (e) {
+    console.error("LLM narrate failed:", e.message);
+    return plain; // no key or API unreachable — deterministic report still ships
   }
 }
 
-async function threatAssessment(snapshot, state, rules) {
+async function threatAssessment(cfg, snapshot, state, rules) {
   try {
-    return await askClaude(
+    return await askLLM(
+      cfg,
       "You are Jaga's analyst. Given portfolio snapshot, price history and active risk rules, write a threat assessment: risk level (LOW/MEDIUM/HIGH), the single biggest exposure, and what rule is closest to tripping. Max 80 words, terse.",
       { snapshot, history: state.history, entries: state.entries, peak: state.peak, rules }
     );
-  } catch {
+  } catch (e) {
+    console.error("LLM advisor failed:", e.message);
     return null;
   }
 }
@@ -170,13 +186,13 @@ async function tick(ctx) {
         dash?.emit({ type: "action", rule: "proposed", text: `${a.side} ${a.symbol} ~$${a.usd} (awaiting human)` });
       }
     }
-    const report = await narrate(snapshot, violations, actions, cfg.rules.mode);
+    const report = await narrate(cfg, snapshot, violations, actions, cfg.rules.mode);
     console.log("\n🧠 Jaga report:\n" + report + "\n");
     audit({ type: "report", report });
     dash?.emit({ type: "report", rule: "🧠 report", text: report });
     await alert(cfg, `🛡️ Jaga intervention\n${report}`);
   } else if (cfg.advisor?.everyTicks && ctx.ticks % cfg.advisor.everyTicks === 0) {
-    const assessment = await threatAssessment(snapshot, state, cfg.rules);
+    const assessment = await threatAssessment(cfg, snapshot, state, cfg.rules);
     if (assessment) {
       console.log("🔭 threat assessment:\n" + assessment + "\n");
       audit({ type: "advisor", assessment });

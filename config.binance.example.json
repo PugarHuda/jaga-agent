@@ -9,6 +9,12 @@
   "dashboard": { "port": 7777 },
   "advisor": { "everyTicks": 20 },
   "alerts": { "webhook": "https://discord.com/api/webhooks/... (optional)" },
+  "llm": {
+    "_comment": "OpenAI-compatible. Key via env: LLM_API_KEY / OPENROUTER_API_KEY / VENICE_API_KEY",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "openrouter/auto",
+    "_venice": { "baseUrl": "https://api.venice.ai/api/v1", "model": "llama-3.3-70b" }
+  },
   "rules": {
     "quote": "USDC",
     "maxPositionPct": 30,

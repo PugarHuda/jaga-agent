@@ -10,7 +10,7 @@ Built for the **Binance Agent OS Mini Hackathon** (Track A).
 
 **Code enforces. AI explains. Never the other way around.**
 
-The risk engine (`engine.mjs`) is a pure, deterministic, unit-tested function — no LLM anywhere in the trade path, so no prompt injection, market manipulation, or model tantrum can widen exposure. Claude sits *outside* the trade path: narrating incidents, writing periodic threat assessments, telling the human what happened and why. That division of labor is Jaga's answer to the #1 open risk of agentic trading.
+The risk engine (`engine.mjs`) is a pure, deterministic, unit-tested function — no LLM anywhere in the trade path, so no prompt injection, market manipulation, or model tantrum can widen exposure. The AI analyst sits *outside* the trade path: narrating incidents, writing periodic threat assessments, telling the human what happened and why. That division of labor is Jaga's answer to the #1 open risk of agentic trading.
 
 ## What it does
 
@@ -23,7 +23,7 @@ The risk engine (`engine.mjs`) is a pure, deterministic, unit-tested function �
       ▲              │                 └──────────────────┘        │ trips           │
       │              │      ┌───────────────┬────────────────┬─────┴───────┐         │
 ┌─────┴───────┐      │ ┌────▼─────┐  ┌──────▼──────┐  ┌──────▼─────┐ ┌─────▼───────┐ │
-│ rogue agent │      │ │ live     │  │ audit trail │  │ webhook    │ │ Claude:     │ │
+│ rogue agent │      │ │ live     │  │ audit trail │  │ webhook    │ │ AI analyst: │ │
 │ (simulated  │      │ │ dashboard│  │ (JSONL)     │  │ alerts     │ │ reports +   │ │
 │  attacker)  │      │ │ SSE      │  │             │  │            │ │ threat scan │ │
 └─────────────┘      │ └──────────┘  └─────────────┘  └────────────┘ └─────────────┘ │
@@ -48,7 +48,7 @@ Rules compose — when several fire on one asset, the worst (full) sell wins, de
 - 📊 **Live dashboard** (`localhost:7777`) — equity curve, positions, drawdown, and a real-time incident feed over SSE. Zero frontend dependencies.
 - 🧾 **Audit trail** — every tick, violation, order and report appended to `audit.jsonl`. Reconstruct any decision after the fact.
 - 🔔 **Webhook alerts** — Discord/Slack-compatible POST on every intervention.
-- 🧠 **Claude analyst** — incident reports when rules trip, periodic threat assessments when they don't ("what's closest to tripping"). Degrades gracefully to deterministic reports without an API key.
+- 🧠 **AI analyst** — incident reports when rules trip, periodic threat assessments when they don't ("what's closest to tripping"). Provider-agnostic (OpenAI-compatible): OpenRouter, Venice AI, or any compatible endpoint via `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `LLM_API_KEY` + optional `LLM_BASE_URL`/`LLM_MODEL`. Degrades gracefully to deterministic reports without a key.
 - 🤖 **Rogue-agent simulation** — the demo ships with an *attacker*: a compromised trading agent that keeps concentrating the portfolio into one asset. Watch Jaga contain it in real time.
 
 ## Quick start (safe demo — no keys, no real money)
@@ -59,7 +59,7 @@ npm test        # 17 assertions on the risk engine
 npm run demo    # rogue agent vs. Jaga, live at http://localhost:7777
 ```
 
-Within ~30 seconds: the rogue agent pumps ETH to 60%+ of the portfolio, Jaga trims it back to the 40% limit through MCP, the market drifts down until stop-losses fire, and every intervention lands on the dashboard, the audit log, and (with `ANTHROPIC_API_KEY` set) a Claude incident report.
+Within ~30 seconds: the rogue agent pumps ETH to 60%+ of the portfolio, Jaga trims it back to the 40% limit through MCP, the market drifts down until stop-losses fire, and every intervention lands on the dashboard, the audit log, and (with `OPENROUTER_API_KEY` or `VENICE_API_KEY` set) an AI incident report.
 
 ## Run against real Binance Agent OS
 
@@ -67,7 +67,7 @@ Within ~30 seconds: the rogue agent pumps ETH to 60%+ of the portfolio, Jaga tri
 2. `cp config.binance.example.json config.json` — fill in your MCP endpoint (Streamable HTTP URL) or stdio command + keys.
 3. Tool names are **remapped in config, not code** — point `tools.account/prices/order` at whatever your Binance MCP server exposes.
 4. Start in `"mode": "propose"` (logs and dashboards intended orders, executes nothing). Flip to `"execute"` when you trust it.
-5. Optional: `export ANTHROPIC_API_KEY=...` for Claude reports, `alerts.webhook` for Discord/Slack pings.
+5. Optional: `export OPENROUTER_API_KEY=...` (or `VENICE_API_KEY` + `LLM_BASE_URL=https://api.venice.ai/api/v1`) for AI reports, `alerts.webhook` for Discord/Slack pings.
 6. `npm start` → open `http://localhost:7777`.
 
 ## Design choices
@@ -82,7 +82,7 @@ Within ~30 seconds: the rogue agent pumps ETH to 60%+ of the portfolio, Jaga tri
 | File | Purpose |
 |---|---|
 | `engine.mjs` | pure risk engine — 6 rules, no I/O, no LLM |
-| `jaga.mjs` | orchestrator: MCP client, executor, audit, alerts, Claude |
+| `jaga.mjs` | orchestrator: MCP client, executor, audit, alerts, AI analyst |
 | `dashboard.mjs` | zero-dependency live dashboard (HTTP + SSE) |
 | `mock-mcp.mjs` | mock Binance MCP server + rogue-agent attacker (`--rogue`) |
 | `test.mjs` | 17 risk-engine self-checks |

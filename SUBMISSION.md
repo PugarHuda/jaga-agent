@@ -2,7 +2,7 @@
 
 ## Checklist
 
-- [ ] Push repo to GitHub: `gh repo create jaga --public --source . --push --description "Jaga - AI risk-guardian agent for Binance Agent OS (MCP). Code enforces, AI explains."`
+- [x] Repo pushed: https://github.com/PugarHuda/jaga-agent
 - [ ] Follow @Binance + repost the announcement post
 - [ ] Record video (script below), upload to the reply
 - [ ] Reply/quote-repost with video + GitHub link (draft below)
@@ -26,7 +26,7 @@ Before recording: `set OPENROUTER_API_KEY=...` (or `VENICE_API_KEY` + `set LLM_B
 >
 > Code enforces. AI explains. Live dashboard + audit trail + AI incident reports. MCP-native.
 >
-> 🎥 demo below · 💻 github.com/PugarHuda/jaga
+> 🎥 demo below · 💻 github.com/PugarHuda/jaga-agent
 
 ## Notes
 

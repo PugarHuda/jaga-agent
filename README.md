@@ -6,6 +6,9 @@ Everyone is building agents that **trade**. Jaga is the agent that **guards** �
 
 Built for the **Binance Agent OS Mini Hackathon** (Track A).
 
+![Jaga live dashboard — rogue agent contained, portfolio de-risked to 100% USDC after a 12.9% drawdown, 14 interventions](dashboard.png)
+*Live shot from `npm run demo`: the market crashed 25%, the rogue agent kept pumping ETH — Jaga executed 14 interventions and the portfolio ended 100% safe in USDC.*
+
 ## The one idea that matters
 
 **Code enforces. AI explains. Never the other way around.**

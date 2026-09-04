@@ -31,4 +31,13 @@ Before recording: `set OPENROUTER_API_KEY=...` (or `VENICE_API_KEY` + `set LLM_B
 ## Notes
 
 - Network: Binance domains are blocked on Telkomsel — use VPN/alt DNS for the real-MCP config and Track B.
-- Track B (do first, ~1h): Binance app → Agent OS subaccount + MCP key → connect Claude Code/Cursor → 1 small trade → survey.
+## Track B — step by step (~1h, needs VPN on Telkomsel)
+
+1. Binance app → search "Agent OS" / MCP → create a **dedicated subaccount**, deposit small (e.g. $15–20), generate the MCP access for it. The app shows the official MCP endpoint/config — copy it.
+2. Connect Claude Code to it (shape depends on what the app gives you):
+   - Remote endpoint: `claude mcp add binance --transport http <ENDPOINT_URL>`
+   - Or community stdio server as fallback:
+     `claude mcp add binance --env BINANCE_API_KEY=... --env BINANCE_API_SECRET=... -- npx -y binance-mcp-server`
+3. In Claude Code: ask for account balance (proves read), then one tiny trade (e.g. market buy $6 BTC) — that's the qualifying MCP trade.
+4. Complete the survey from the tweet (open inside the Binance app), follow + repost if not done.
+5. Bonus: point Jaga at the same MCP (`config.json`) and let it guard the subaccount for real — that clip also upgrades the Track A video.

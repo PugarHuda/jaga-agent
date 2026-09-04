@@ -4,3 +4,4 @@ config.json
 .env
 audit.jsonl
 demo.log
+.playwright-mcp/

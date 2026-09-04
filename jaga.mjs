@@ -177,7 +177,7 @@ async function execute(ctx, a) {
 function propose(ctx, a) {
   // one open proposal per symbol — re-proposing the same breach every tick is noise
   if ([...ctx.pending.values()].some((p) => p.symbol === a.symbol)) return;
-  const id = `${Date.now()}-${a.symbol}`;
+  const id = crypto.randomUUID(); // unguessable — an attacker can't forge approvals blind
   ctx.pending.set(id, a);
   console.log(`   📋 PROPOSED ${a.side} ${a.symbol} ~$${a.usd} (awaiting approval on dashboard)`);
   audit({ type: "proposal", id, ...a });

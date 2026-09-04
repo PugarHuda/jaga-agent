@@ -137,6 +137,18 @@ export function startDashboard(port, onDecision) {
 
   const server = http.createServer((req, res) => {
     if (req.method === "POST" && req.url === "/decide") {
+      // CSRF guard: browsers always send Origin on cross-site POSTs — reject any
+      // origin that isn't this dashboard itself (curl/local tools send none)
+      const origin = req.headers.origin;
+      if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
+        res.writeHead(403).end();
+        return;
+      }
+      // JSON-only: an HTML form can't send this content-type cross-site without preflight
+      if (!/^application\/json/.test(req.headers["content-type"] ?? "")) {
+        res.writeHead(415).end();
+        return;
+      }
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -166,7 +178,8 @@ export function startDashboard(port, onDecision) {
       res.end(PAGE.replace("__BOOT__", JSON.stringify(store).replace(/</g, "\\u003c")));
     }
   });
-  server.listen(port, () => console.log(`📊 dashboard → http://localhost:${port}`));
+  // loopback only — the approval endpoint must never be reachable from the LAN
+  server.listen(port, "127.0.0.1", () => console.log(`📊 dashboard → http://localhost:${port}`));
   const heartbeat = setInterval(() => clients.forEach((c) => c.write(":hb\n\n")), 15000);
 
   return {

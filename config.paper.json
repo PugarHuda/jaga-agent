@@ -1,0 +1,19 @@
+{
+  "_comment": "Paper mode: REAL live Binance prices, simulated wallet. Tighter thresholds than production so interventions are visible on a demo timescale.",
+  "mcp": { "command": "node", "args": ["paper-mcp.mjs", "--rogue"] },
+  "tools": { "account": "get_account", "prices": "get_prices", "order": "place_order" },
+  "intervalSec": 5,
+  "dashboard": { "port": 7777 },
+  "advisor": { "everyTicks": 6 },
+  "rules": {
+    "quote": "USDC",
+    "maxPositionPct": 40,
+    "maxDrawdownPct": 8,
+    "stopLossPct": 1.5,
+    "trailingStopPct": 1,
+    "takeProfitPct": 2,
+    "minTradeUsd": 10,
+    "volatility": { "window": 6, "dropPct": 1 },
+    "mode": "execute"
+  }
+}

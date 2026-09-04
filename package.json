@@ -6,6 +6,7 @@
   "main": "jaga.mjs",
   "scripts": {
     "demo": "node jaga.mjs --config config.demo.json",
+    "paper": "node jaga.mjs --config config.paper.json",
     "once": "node jaga.mjs --config config.demo.json --once",
     "start": "node jaga.mjs --config config.json",
     "test": "node test.mjs"

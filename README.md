@@ -59,8 +59,11 @@ Rules compose — when several fire on one asset, the worst (full) sell wins, de
 ```bash
 npm install
 npm test        # 17 assertions on the risk engine
-npm run demo    # rogue agent vs. Jaga, live at http://localhost:7777
+npm run demo    # simulated market: rogue agent vs. Jaga, live at http://localhost:7777
+npm run paper   # ⭐ REAL live Binance prices (data-api.binance.vision), simulated wallet
 ```
+
+Three modes, one codebase: **demo** (simulated market — deterministic, always eventful), **paper** (real live Binance market data + simulated wallet — no keys needed), and **live** (your real Agent OS subaccount via MCP, below).
 
 Within ~30 seconds: the rogue agent pumps ETH to 60%+ of the portfolio, Jaga trims it back to the 40% limit through MCP, the market drifts down until stop-losses fire, and every intervention lands on the dashboard, the audit log, and (with `OPENROUTER_API_KEY` or `VENICE_API_KEY` set) an AI incident report.
 
@@ -88,6 +91,7 @@ Within ~30 seconds: the rogue agent pumps ETH to 60%+ of the portfolio, Jaga tri
 | `jaga.mjs` | orchestrator: MCP client, executor, audit, alerts, AI analyst |
 | `dashboard.mjs` | zero-dependency live dashboard (HTTP + SSE) |
 | `mock-mcp.mjs` | mock Binance MCP server + rogue-agent attacker (`--rogue`) |
+| `paper-mcp.mjs` | paper-trading MCP server: live Binance prices, simulated wallet |
 | `test.mjs` | 17 risk-engine self-checks |
 | `config.demo.json` / `config.binance.example.json` | demo & production configs |
 

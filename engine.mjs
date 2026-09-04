@@ -75,14 +75,16 @@ export function evaluate(snapshot, rules, state) {
 
     // 4. concentration limit: trim, don't liquidate
     const pct = (p.usd / snapshot.total) * 100;
-    if (pct > rules.maxPositionPct) {
+    const excess = p.usd - (snapshot.total * rules.maxPositionPct) / 100;
+    if (pct > rules.maxPositionPct && excess >= rules.minTradeUsd) {
+      // only report what we'd actually act on — a dust excess is noise, not risk
       violations.push({
         rule: "max-position",
         asset: p.asset,
         severity: "medium",
         detail: `${p.asset} is ${pct.toFixed(1)}% of portfolio (limit ${rules.maxPositionPct}%)`,
       });
-      addSell(p.asset, p.usd - (snapshot.total * rules.maxPositionPct) / 100, false);
+      addSell(p.asset, excess, false);
     }
 
     // 5. volatility circuit breaker: flash-crash inside the rolling window

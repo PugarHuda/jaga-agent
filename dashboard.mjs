@@ -41,6 +41,11 @@ const PAGE = /* html */ `<!doctype html>
   <div class="card"><div class="k">Drawdown</div><div class="v" id="dd">—</div></div>
   <div class="card"><div class="k">Mode</div><div class="v" id="mode">—</div></div>
   <div class="card"><div class="k">Interventions</div><div class="v" id="acts">0</div></div>
+  <div class="card"><div class="k">Damage avoided</div><div class="v" id="saved">—</div></div>
+</div>
+<div class="card" id="pendingCard" style="display:none;margin-bottom:16px;border-color:var(--amber)">
+  <h2 style="margin-top:0">⏳ Pending approvals (mode: propose)</h2>
+  <div id="pending" style="display:flex;flex-direction:column;gap:8px"></div>
 </div>
 <div class="row">
   <div class="card"><h2>Equity curve</h2><canvas id="chart" width="800" height="180"></canvas>
@@ -63,6 +68,23 @@ function draw(){
   x.lineTo(sx(series.length-1),c.height-pad);x.lineTo(sx(0),c.height-pad);x.closePath();
   x.fillStyle=(series.at(-1)>=series[0]?"#34d399":"#f87171")+"18";x.fill();
 }
+function decide(id,approve){
+  fetch("/decide",{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({id,approve})});
+}
+function renderPending(ev){
+  const d=document.createElement("div");d.className="ev action";d.dataset.id=ev.id;
+  const t=document.createElement("span");t.textContent=ev.text+" ";
+  const yes=document.createElement("button");yes.textContent="✅ Approve";
+  const no=document.createElement("button");no.textContent="❌ Reject";
+  for(const b of [yes,no])b.style.cssText="margin-left:8px;padding:2px 10px;border-radius:6px;border:1px solid var(--line);background:#1e293b;color:var(--txt);cursor:pointer";
+  yes.onclick=()=>decide(ev.id,true);no.onclick=()=>decide(ev.id,false);
+  d.append(t,yes,no);$("pending").append(d);$("pendingCard").style.display="block";
+}
+function removePending(id){
+  document.querySelectorAll('#pending [data-id="'+CSS.escape(id)+'"]').forEach(e=>e.remove());
+  if(!$("pending").children.length)$("pendingCard").style.display="none";
+}
 function feed(ev){
   // MCP/LLM text is untrusted → textContent only, never innerHTML
   const d=document.createElement("div");d.className="ev "+ev.type;
@@ -79,6 +101,10 @@ function tick(ev){
   const dd=ev.peak?((ev.peak-ev.total)/ev.peak*100):0;
   $("dd").textContent=dd.toFixed(1)+"%";$("dd").className="v "+(dd>5?"down":"up");
   $("mode").textContent=ev.mode;
+  if(ev.avoided!==undefined){
+    $("saved").textContent=(ev.avoided>=0?"+":"")+fmt(ev.avoided)+" "+ev.quote;
+    $("saved").className="v "+(ev.avoided>=0?"up":"down");
+  }
   const tbl=$("pos");tbl.textContent="";
   const tr=(cells,th)=>{const r=document.createElement("tr");
     for(const c of cells){const e=document.createElement(th?"th":"td");e.textContent=c;r.append(e)}
@@ -87,24 +113,46 @@ function tick(ev){
   for(const p of ev.positions)tr([p.asset,p.qty.toFixed(6),fmt(p.price),fmt(p.usd),(p.usd/ev.total*100).toFixed(1)+"%"]);
   tr([ev.quote,"","",fmt(ev.quoteFree),(ev.quoteFree/ev.total*100).toFixed(1)+"%"]);
 }
-fetch("/state").then(r=>r.json()).then(s=>{
-  series=s.series;acts=s.actions;$("acts").textContent=acts;draw();
-  s.events.forEach(feed);if(s.lastTick)tick(s.lastTick);
-});
+// server injects current state at serve time — first paint is already live
+const BOOT=__BOOT__;
+series=BOOT.series;acts=BOOT.actions;$("acts").textContent=acts;draw();
+BOOT.events.forEach(feed);BOOT.pending.forEach(renderPending);if(BOOT.lastTick)tick(BOOT.lastTick);
 new EventSource("/events").onmessage=m=>{
   const ev=JSON.parse(m.data);
   if(ev.type==="tick")return tick(ev);
+  if(ev.type==="decision")return removePending(ev.id);
+  if(ev.type==="proposal")renderPending(ev);
   if(ev.type==="action"){acts++;$("acts").textContent=acts}
   feed(ev);
 };
 </script></body></html>`;
 
-export function startDashboard(port) {
+export function startDashboard(port, onDecision) {
   const clients = new Set();
-  const store = { series: [], events: [], actions: 0, lastTick: null };
+  const store = { series: [], events: [], actions: 0, lastTick: null, pending: [] };
+  const broadcast = (ev) => {
+    const line = `data: ${JSON.stringify(ev)}\n\n`;
+    clients.forEach((c) => c.write(line));
+  };
 
   const server = http.createServer((req, res) => {
-    if (req.url === "/events") {
+    if (req.method === "POST" && req.url === "/decide") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        try {
+          const { id, approve } = JSON.parse(body);
+          store.pending = store.pending.filter((p) => p.id !== id);
+          broadcast({ type: "decision", id, ts: Date.now() });
+          Promise.resolve(onDecision?.(id, Boolean(approve))).catch((e) =>
+            console.error("decision failed:", e.message)
+          );
+          res.writeHead(204).end();
+        } catch {
+          res.writeHead(400).end();
+        }
+      });
+    } else if (req.url === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
       res.write(":ok\n\n");
       clients.add(res);
@@ -114,7 +162,8 @@ export function startDashboard(port) {
       res.end(JSON.stringify(store));
     } else {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(PAGE);
+      // <-escape keeps untrusted MCP/LLM text from closing the script tag
+      res.end(PAGE.replace("__BOOT__", JSON.stringify(store).replace(/</g, "\\u003c")));
     }
   });
   server.listen(port, () => console.log(`📊 dashboard → http://localhost:${port}`));
@@ -127,13 +176,14 @@ export function startDashboard(port) {
         store.lastTick = ev;
         store.series.push(ev.total);
         if (store.series.length > 300) store.series.shift();
+      } else if (ev.type === "proposal") {
+        store.pending.push({ id: ev.id, text: ev.text });
       } else {
         if (ev.type === "action") store.actions++;
         store.events.unshift(ev);
         store.events.length = Math.min(store.events.length, 80);
       }
-      const line = `data: ${JSON.stringify(ev)}\n\n`;
-      clients.forEach((c) => c.write(line));
+      broadcast(ev);
     },
     close() {
       clearInterval(heartbeat);

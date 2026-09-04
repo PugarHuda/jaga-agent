@@ -103,8 +103,11 @@ export function evaluate(snapshot, rules, state) {
   }
 
   // 6. portfolio-level max drawdown: de-risk everything
+  // only fires while there's something left to sell — once we're fully in quote,
+  // repeating "still down from peak" every tick is noise, not protection
+  const sellable = snapshot.positions.some((p) => p.usd >= rules.minTradeUsd);
   const ddPct = s.peak > 0 ? ((s.peak - snapshot.total) / s.peak) * 100 : 0;
-  if (ddPct >= rules.maxDrawdownPct) {
+  if (ddPct >= rules.maxDrawdownPct && sellable) {
     violations.push({
       rule: "max-drawdown",
       asset: "*",

@@ -52,6 +52,7 @@ async function takeSnapshot(mcp, cfg) {
   const account = parseToolJson(await mcp.callTool({ name: cfg.tools.account, arguments: {} }));
   const prices = parseToolJson(await mcp.callTool({ name: cfg.tools.prices, arguments: {} }));
   const quote = cfg.rules.quote;
+  const priceOf = (asset) => Number(prices[`${asset}${quote}`]) || 0;
   let quoteFree = 0;
   const positions = [];
   for (const b of account.balances ?? []) {
@@ -66,7 +67,18 @@ async function takeSnapshot(mcp, cfg) {
     positions.push({ asset: b.asset, qty, price, usd: qty * price });
   }
   const total = quoteFree + positions.reduce((s, p) => s + p.usd, 0);
-  return { positions, quote, quoteFree, total };
+  return { positions, quote, quoteFree, total, priceOf };
+}
+
+// counterfactual: what the assets Jaga sold would be worth if we'd kept holding.
+// positive = losses avoided by intervening.
+function damageAvoided(ledger, snapshot) {
+  let usd = 0;
+  for (const l of ledger) {
+    const now = snapshot.priceOf(l.asset);
+    if (now) usd += (l.fillPrice - now) * l.qty;
+  }
+  return usd;
 }
 
 // --- Alerts (Discord/Slack/Telegram-style webhook) -------------------------
@@ -140,6 +152,52 @@ async function threatAssessment(cfg, snapshot, state, rules) {
   }
 }
 
+// --- Execution & approvals -------------------------------------------------
+async function execute(ctx, a) {
+  const { mcp, cfg, dash } = ctx;
+  const res = parseToolJson(
+    await mcp.callTool({
+      name: cfg.tools.order,
+      arguments: { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd },
+    })
+  );
+  const status = res.status ?? "ok";
+  if (status === "FILLED") {
+    const asset = a.symbol.slice(0, -cfg.rules.quote.length);
+    const qty = Number(res.executedQty) || 0;
+    const fillPrice = Number(res.fillPrice) || (qty ? a.usd / qty : 0);
+    if (qty && fillPrice) ctx.ledger.push({ asset, qty, fillPrice });
+    if (ctx.ledger.length > 200) ctx.ledger.shift(); // ponytail: rolling window, not forever
+  }
+  console.log(`   ✅ EXECUTED ${a.side} ${a.symbol} ~$${a.usd}: ${status}`);
+  audit({ type: "action", ...a, status });
+  dash?.emit({ type: "action", rule: "executed", text: `${a.side} ${a.symbol} ~$${a.usd} → ${status}` });
+}
+
+function propose(ctx, a) {
+  // one open proposal per symbol — re-proposing the same breach every tick is noise
+  if ([...ctx.pending.values()].some((p) => p.symbol === a.symbol)) return;
+  const id = `${Date.now()}-${a.symbol}`;
+  ctx.pending.set(id, a);
+  console.log(`   📋 PROPOSED ${a.side} ${a.symbol} ~$${a.usd} (awaiting approval on dashboard)`);
+  audit({ type: "proposal", id, ...a });
+  ctx.dash?.emit({ type: "proposal", id, rule: "proposed", text: `${a.side} ${a.symbol} ~$${a.usd}` });
+}
+
+async function onDecision(ctx, id, approve) {
+  const a = ctx.pending.get(id);
+  if (!a) return;
+  ctx.pending.delete(id);
+  audit({ type: "decision", id, approve, ...a });
+  if (approve) await execute(ctx, a);
+  else ctx.dash?.emit({ type: "violation", rule: "rejected", text: `human rejected ${a.side} ${a.symbol} ~$${a.usd}` });
+  persist(ctx);
+}
+
+function persist(ctx) {
+  fs.writeFileSync(STATE_PATH, JSON.stringify({ engine: ctx.state, ledger: ctx.ledger }, null, 2));
+}
+
 // --- Main loop -------------------------------------------------------------
 async function tick(ctx) {
   const { mcp, cfg, dash } = ctx;
@@ -147,16 +205,18 @@ async function tick(ctx) {
   const { violations, actions, state } = evaluate(snapshot, cfg.rules, ctx.state);
   ctx.state = state;
   ctx.ticks++;
+  const avoided = damageAvoided(ctx.ledger, snapshot);
 
   console.log(
-    `[${new Date().toISOString()}] total=${snapshot.total.toFixed(2)} ${cfg.rules.quote} | ` +
+    `[${new Date().toISOString()}] total=${snapshot.total.toFixed(2)} ${cfg.rules.quote} | avoided=${avoided.toFixed(2)} | ` +
       snapshot.positions.map((p) => `${p.asset}=${p.usd.toFixed(2)}`).join(" ")
   );
-  audit({ type: "tick", total: snapshot.total, positions: snapshot.positions });
+  audit({ type: "tick", total: snapshot.total, avoided, positions: snapshot.positions });
   dash?.emit({
     type: "tick",
     total: snapshot.total,
     peak: state.peak,
+    avoided,
     quote: snapshot.quote,
     quoteFree: snapshot.quoteFree,
     positions: snapshot.positions,
@@ -171,20 +231,8 @@ async function tick(ctx) {
       dash?.emit({ type: "violation", rule: v.rule, text: v.detail });
     }
     for (const a of actions) {
-      if (cfg.rules.mode === "execute") {
-        const res = await mcp.callTool({
-          name: cfg.tools.order,
-          arguments: { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd },
-        });
-        const status = parseToolJson(res).status ?? "ok";
-        console.log(`   ✅ EXECUTED ${a.side} ${a.symbol} ~$${a.usd}: ${status}`);
-        audit({ type: "action", ...a, status });
-        dash?.emit({ type: "action", rule: "executed", text: `${a.side} ${a.symbol} ~$${a.usd} → ${status}` });
-      } else {
-        console.log(`   📋 PROPOSED ${a.side} ${a.symbol} ~$${a.usd} (mode=propose, not executed)`);
-        audit({ type: "proposal", ...a });
-        dash?.emit({ type: "action", rule: "proposed", text: `${a.side} ${a.symbol} ~$${a.usd} (awaiting human)` });
-      }
+      if (cfg.rules.mode === "execute") await execute(ctx, a);
+      else propose(ctx, a);
     }
     const report = await narrate(cfg, snapshot, violations, actions, cfg.rules.mode);
     console.log("\n🧠 Jaga report:\n" + report + "\n");
@@ -200,7 +248,7 @@ async function tick(ctx) {
     }
   }
 
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  persist(ctx);
 }
 
 async function main() {
@@ -209,13 +257,19 @@ async function main() {
     console.error(`Missing ${CONFIG_PATH}. Copy config.demo.json or config.binance.example.json.`);
     process.exit(1);
   }
+  const persisted = loadJson(STATE_PATH, {});
   const ctx = {
     cfg,
-    state: loadJson(STATE_PATH, freshState()),
+    state: persisted.engine ?? freshState(),
+    ledger: persisted.ledger ?? [],
+    pending: new Map(),
     ticks: 0,
-    dash: cfg.dashboard?.port ? startDashboard(cfg.dashboard.port) : null,
+    dash: null,
     mcp: null,
   };
+  ctx.dash = cfg.dashboard?.port
+    ? startDashboard(cfg.dashboard.port, (id, approve) => onDecision(ctx, id, approve))
+    : null;
   console.log(`Jaga 🛡️  guarding via MCP (${cfg.mcp.url ?? cfg.mcp.command}) — mode=${cfg.rules.mode}`);
   ctx.mcp = await connectMcp(cfg);
   await tick(ctx);

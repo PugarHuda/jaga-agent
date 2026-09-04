@@ -81,4 +81,8 @@ r = evaluate(snap([pos("ETH", 4000, 800)], 200), rules, st); // -7% AND 80% conc
 const sells = r.actions.filter((a) => a.symbol === "ETHUSDC");
 ok(sells.length === 1 && sells[0].usd === 800 && sells[0].full, "one deduped action, full sell wins");
 
+// 10. Drawdown with nothing left to sell stays quiet (no violation spam)
+r = evaluate(snap([], 850), rules, { ...freshState(), peak: 1000 });
+ok(r.violations.length === 0 && r.actions.length === 0, "all-in-quote drawdown is silent");
+
 console.log(`✅ all ${checks} risk-engine checks passed`);

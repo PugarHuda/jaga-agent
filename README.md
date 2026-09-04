@@ -49,6 +49,8 @@ Rules compose — when several fire on one asset, the worst (full) sell wins, de
 **Around the engine:**
 
 - 📊 **Live dashboard** (`localhost:7777`) — equity curve, positions, drawdown, and a real-time incident feed over SSE. Zero frontend dependencies.
+- 💰 **Damage-avoided counter** — for every executed de-risk, Jaga tracks the counterfactual ("what would that position be worth if we'd kept holding?") and shows the running total of losses prevented. Proof of value in one number.
+- 🙋 **Human-in-the-loop approvals** — in `propose` mode, orders don't execute: they appear on the dashboard as pending approvals with ✅/❌ buttons. One click executes through MCP; nothing trades without you. Flip to `execute` only when you trust it.
 - 🧾 **Audit trail** — every tick, violation, order and report appended to `audit.jsonl`. Reconstruct any decision after the fact.
 - 🔔 **Webhook alerts** — Discord/Slack-compatible POST on every intervention.
 - 🧠 **AI analyst** — incident reports when rules trip, periodic threat assessments when they don't ("what's closest to tripping"). Provider-agnostic (OpenAI-compatible): OpenRouter, Venice AI, or any compatible endpoint via `OPENROUTER_API_KEY` / `VENICE_API_KEY` / `LLM_API_KEY` + optional `LLM_BASE_URL`/`LLM_MODEL`. Degrades gracefully to deterministic reports without a key.

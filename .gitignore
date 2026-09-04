@@ -2,3 +2,5 @@ node_modules/
 state.json
 config.json
 .env
+audit.jsonl
+demo.log

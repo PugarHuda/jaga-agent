@@ -6,12 +6,18 @@
   },
   "tools": { "account": "binance_get_account", "prices": "binance_get_ticker", "order": "binance_create_order" },
   "intervalSec": 30,
+  "dashboard": { "port": 7777 },
+  "advisor": { "everyTicks": 20 },
+  "alerts": { "webhook": "https://discord.com/api/webhooks/... (optional)" },
   "rules": {
     "quote": "USDC",
     "maxPositionPct": 30,
     "maxDrawdownPct": 10,
     "stopLossPct": 8,
+    "trailingStopPct": 5,
+    "takeProfitPct": 15,
     "minTradeUsd": 10,
+    "volatility": { "window": 10, "dropPct": 6 },
     "mode": "propose"
   }
 }

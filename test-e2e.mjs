@@ -66,6 +66,7 @@ const spawnJaga = () => {
 };
 let jaga = spawnJaga();
 
+let passed = false;
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined });
 try {
   const t0 = Date.now();
@@ -241,7 +242,9 @@ try {
   ok(panicBox && panicBox.x >= 0 && panicBox.x + panicBox.width <= 420 && panicBox.y < 200, "panic button stays on-screen near the top on a phone");
 
   console.log(`✅ all ${checks} e2e checks passed`);
+  passed = true;
 } finally {
+  if (!passed) console.error(`--- last 40 lines of jaga log (${checks} checks had passed) ---\n` + out.trim().split("\n").slice(-40).join("\n"));
   await browser.close();
   jaga.kill();
   rogue.kill();

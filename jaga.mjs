@@ -37,6 +37,11 @@ const STATE_PATH = opt("--state", "state.json");
 const AUDIT_PATH = opt("--audit", "audit.jsonl");
 const AUDIT_MAX_BYTES = Number(opt("--audit-max-mb", 50)) * 1024 * 1024; // rotate to .1 past this; the hash chain continues across files
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Every MCP call gets a deadline. Ticks, approvals and panic share one queue, so a
+// server that accepts the request and never answers would otherwise freeze the guard
+// for the SDK's full 60s default — several ticks blind, with no log line saying why.
+const MCP_TIMEOUT = Number(opt("--mcp-timeout", 15000));
+const call = (mcp, name, args) => mcp.callTool({ name, arguments: args ?? {} }, undefined, { timeout: MCP_TIMEOUT });
 
 function loadJson(path, fallback) {
   try {
@@ -87,7 +92,7 @@ async function connectMcp(cfg) {
 async function loadStepSizes(mcp, cfg) {
   if (!cfg.tools.symbolInfo) return {};
   try {
-    const steps = parseStepSizes(toolResult(await mcp.callTool({ name: cfg.tools.symbolInfo, arguments: cfg.tools.args?.symbolInfo ?? {} })));
+    const steps = parseStepSizes(toolResult(await call(mcp, cfg.tools.symbolInfo, cfg.tools.args?.symbolInfo)));
     console.log(`📐 LOT_SIZE steps loaded for ${Object.keys(steps).length} symbols`);
     return steps;
   } catch (e) {
@@ -98,8 +103,8 @@ async function loadStepSizes(mcp, cfg) {
 
 async function takeSnapshot(mcp, cfg, ctx) {
   const a = cfg.tools.args ?? {};
-  const balances = parseBalances(toolResult(await mcp.callTool({ name: cfg.tools.account, arguments: a.account ?? {} })));
-  const raw = parsePrices(toolResult(await mcp.callTool({ name: cfg.tools.prices, arguments: a.prices ?? {} })));
+  const balances = parseBalances(toolResult(await call(mcp, cfg.tools.account, a.account)));
+  const raw = parsePrices(toolResult(await call(mcp, cfg.tools.prices, a.prices)));
   let prices = raw;
   if (ctx) {
     const screened = screenPrices(ctx.lastPrices, raw, ctx.suspect, cfg.rules.maxTickJumpPct ?? 25);
@@ -217,13 +222,13 @@ async function execute(ctx, a) {
   let res;
   try {
     res = toolResult(
-      await mcp.callTool({
-        name: cfg.tools.order,
-        arguments:
-          a.full && a.qty && ctx.steps[a.symbol]
-            ? { symbol: a.symbol, side: a.side, type: "MARKET", quantity: floorToStep(a.qty, ctx.steps[a.symbol]) } // exact, never over-asks
-            : { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd },
-      })
+      await call(
+        mcp,
+        cfg.tools.order,
+        a.full && a.qty && ctx.steps[a.symbol]
+          ? { symbol: a.symbol, side: a.side, type: "MARKET", quantity: floorToStep(a.qty, ctx.steps[a.symbol]) } // exact, never over-asks
+          : { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd }
+      )
     );
   } catch (e) {
     console.error(`   ❌ ORDER FAILED ${a.side} ${a.symbol} ~$${a.usd}: ${e.message}`);

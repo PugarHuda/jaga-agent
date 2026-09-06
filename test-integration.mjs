@@ -158,4 +158,34 @@ try {
   srv.kill();
 }
 
+// --- replay mode: real history, one wall clock for every caller ------------------
+const RPORT = 7793;
+const rsrv = spawn(process.execPath, ["paper-mcp.mjs", "--http", String(RPORT), "--replay", "2024-08-04T20:00:00Z", "--step", "30", "--tick", "2"], { stdio: ["ignore", "ignore", "pipe"] });
+let rerr = "";
+rsrv.stderr.on("data", (d) => (rerr += d));
+try {
+  const t0 = Date.now();
+  while (!/replaying/.test(rerr)) {
+    if (Date.now() - t0 > 30000) throw new Error("replay server did not start: " + rerr);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const url = new URL(`http://127.0.0.1:${RPORT}/mcp`);
+  const c1 = new Client({ name: "c1", version: "1" }), c2 = new Client({ name: "c2", version: "1" });
+  await c1.connect(new StreamableHTTPClientTransport(url));
+  await c2.connect(new StreamableHTTPClientTransport(url));
+  const p1 = toolResult(await c1.callTool({ name: "get_prices", arguments: {} }));
+  const p2 = toolResult(await c2.callTool({ name: "get_prices", arguments: {} }));
+  ok(p1._source === "replay" && p1._replayMinute === p2._replayMinute, "two callers see the same replay minute (clock is shared, not per call)");
+  ok(Math.abs(p1.ETHUSDC - 2765) < 30, "replay starts at the real Aug 4 2024 20:00 UTC ETH price (~2765)");
+  await new Promise((r) => setTimeout(r, 2300));
+  const p3 = toolResult(await c1.callTool({ name: "get_prices", arguments: {} }));
+  ok(p3._replayMinute === 30, "after one tick the replay advanced exactly one step (30 min)");
+  const fill = toolResult(await c1.callTool({ name: "place_order", arguments: { symbol: "ETHUSDC", side: "SELL", type: "MARKET", quoteOrderQty: 50 } }));
+  ok(fill.status === "FILLED" && Math.abs(fill.fillPrice - p3.ETHUSDC) < 1e-9 && fill.fee > 0, "replay fills at the historical close with the fee applied");
+  await c1.close();
+  await c2.close();
+} finally {
+  rsrv.kill();
+}
+
 console.log(`✅ all ${checks} integration checks passed`);

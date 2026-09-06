@@ -217,12 +217,13 @@ async function execute(ctx, a) {
 // Emergency stop: the human hits the red button → everything sellable goes to quote
 // NOW, regardless of mode. Deterministic, audited, no LLM involved.
 async function panic(ctx) {
-  const s = ctx.last ?? (await takeSnapshot(ctx.mcp, ctx.cfg));
+  const s = await takeSnapshot(ctx.mcp, ctx.cfg); // fresh: never size a sell off a stale tick
   const targets = s.positions.filter((p) => p.usd >= ctx.cfg.rules.minTradeUsd);
   console.log(`🚨 PANIC: human-triggered de-risk of ${targets.length} position(s)`);
   audit({ type: "panic", positions: targets.map((p) => p.asset) });
   ctx.dash?.emit({ type: "violation", rule: "🚨 panic", text: `human-triggered de-risk: selling ${targets.map((p) => p.asset).join(", ") || "nothing (already in quote)"}` });
-  for (const p of targets) await execute(ctx, { side: "SELL", symbol: `${p.asset}${s.quote}`, usd: Math.round(p.usd * 100) / 100, full: true });
+  for (const p of targets) await execute(ctx, { side: "SELL", symbol: `${p.asset}${s.quote}`, usd: Math.round(p.usd * 100) / 100, full: true, qty: p.qty });
+  for (const id of ctx.pending.keys()) ctx.dash?.emit({ type: "decision", id }); // proposals are moot now — clear the dashboard too
   ctx.pending.clear();
   persist(ctx);
 }
@@ -446,14 +447,14 @@ async function tick(ctx) {
       else propose(ctx, a);
     }
     // narration runs off the critical path: the next tick never waits for an LLM
-    void narrate(cfg, snapshot, violations, actions, cfg.rules.mode).then(async (report) => {
+    ctx.inflight = narrate(cfg, snapshot, violations, actions, cfg.rules.mode).then(async (report) => {
       console.log("\n🧠 Jaga report:\n" + report + "\n");
       audit({ type: "report", report });
       dash?.emit({ type: "report", rule: "🧠 report", text: report });
       await alert(cfg, `🛡️ Jaga intervention\n${report}`);
     });
   } else if (cfg.advisor?.everyTicks && ctx.ticks % cfg.advisor.everyTicks === 0) {
-    void threatAssessment(cfg, snapshot, state, cfg.rules).then((assessment) => {
+    ctx.inflight = threatAssessment(cfg, snapshot, state, cfg.rules).then((assessment) => {
       if (!assessment) return;
       const level = parseThreatLevel(assessment);
       console.log("🔭 threat assessment:\n" + assessment + "\n");
@@ -486,6 +487,7 @@ async function main() {
     interventions: 0,
     errors: 0,
     steps: {},
+    inflight: null,
     last: null,
     lastViolations: [],
     lastTickAt: null,
@@ -525,7 +527,10 @@ async function main() {
     process.exit(0);
   }
   await tick(ctx);
-  if (flag("--once")) process.exit(0);
+  if (flag("--once")) {
+    await ctx.inflight; // let the report land before exiting
+    process.exit(0);
+  }
 
   // sequential loop: a slow tick (network, MCP) can never overlap the next one
   // and double-execute a sell. Three failures in a row → reconnect the MCP client.

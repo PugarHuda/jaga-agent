@@ -12,7 +12,7 @@ const args = process.argv.slice(2);
 const opt = (n, d) => (args.includes(n) ? args[args.indexOf(n) + 1] : d);
 const CONFIG = opt("--config", "config.paper.json");
 const PORT = opt("--port", "7788");
-const replayArgs = args.includes("--replay") ? ["--replay", opt("--replay"), "--step", opt("--step", "15"), "--hours", opt("--hours", "12")] : [];
+const replayArgs = args.includes("--replay") ? ["--replay", opt("--replay"), "--step", opt("--step", "15"), "--hours", opt("--hours", "12"), "--tick", opt("--tick", "3")] : [];
 
 const kids = [];
 const run = (label, a) => {

@@ -225,6 +225,8 @@ export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp
         if (store.series.length > 300) store.series.shift();
       } else if (ev.type === "proposal") {
         store.pending.push({ id: ev.id, text: ev.text });
+      } else if (ev.type === "decision") {
+        store.pending = store.pending.filter((p) => p.id !== ev.id);
       } else {
         if (ev.type === "action") store.actions++;
         store.events.unshift(ev);

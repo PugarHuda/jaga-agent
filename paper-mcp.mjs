@@ -22,6 +22,7 @@ const opt = (n, d) => (args.includes(n) ? args[args.indexOf(n) + 1] : d);
 const REPLAY_FROM = opt("--replay", null); // ISO timestamp → historical replay
 const REPLAY_STEP = Number(opt("--step", 15)); // minutes advanced per get_prices call
 const REPLAY_HOURS = Number(opt("--hours", 12));
+const REPLAY_TICK_MS = Number(opt("--tick", 3)) * 1000; // real seconds between steps — every caller sees the same clock
 const REST = "https://data-api.binance.vision";
 const WS = "wss://data-stream.binance.vision/stream?streams=";
 const QUOTE = "USDC";
@@ -42,7 +43,7 @@ const filters = {}; // symbol -> { minNotional, stepSize, minQty }
 let exchangeInfo = { symbols: [] }; // raw Binance filters, served verbatim by get_symbol_info
 let priceSource = "rest";
 let lastWsAt = 0;
-const replay = { candles: {}, i: 0, n: 0, t: null }; // symbol -> [{t, close}], cursor
+const replay = { candles: {}, i: 0, n: 0, t: null, startedAt: 0 }; // symbol -> [{t, close}], cursor
 const orders = [];
 
 const get = async (path, retried = false) => {
@@ -69,7 +70,8 @@ async function loadReplay() {
   replay.n = Math.min(...Object.values(replay.candles).map((c) => c.length));
   if (!replay.n) throw new Error("no candles in the replay window");
   seekReplay(0);
-  console.error(`⏪ replaying ${replay.n} minutes of real Binance history from ${new Date(start).toISOString()} (${REPLAY_STEP} min per tick)`);
+  replay.startedAt = Date.now();
+  console.error(`⏪ replaying ${replay.n} minutes of real Binance history from ${new Date(start).toISOString()} (${REPLAY_STEP} min every ${REPLAY_TICK_MS / 1000}s)`);
 }
 function seekReplay(i) {
   replay.i = Math.min(i, replay.n - 1);
@@ -112,7 +114,7 @@ function streamPrices() {
 }
 
 async function refreshIfStale() {
-  if (REPLAY_FROM) return seekReplay(replay.i + REPLAY_STEP); // advance history; holds at the last candle
+  if (REPLAY_FROM) return seekReplay(Math.floor((Date.now() - replay.startedAt) / REPLAY_TICK_MS) * REPLAY_STEP); // wall-clock driven; holds at the last candle
   if (priceSource === "websocket" && Date.now() - lastWsAt > 15000) priceSource = "rest (websocket stale)";
   if (priceSource === "websocket") return;
   const list = await get("/api/v3/ticker/price?symbols=" + encodeURIComponent(JSON.stringify(SYMBOLS)));

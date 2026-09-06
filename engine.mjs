@@ -7,7 +7,8 @@
 //             maxExposurePct?: 80,     ← cap on total non-quote exposure
 //             maxDailyLossPct?: 5 }    ← cap on loss since 00:00 UTC (prop-desk style)
 // state:    { peak, entries: {ASSET: {entry, high, qty}}, history: {ASSET: [price,...]},
-//             day: {date, start} }   ← equity at the start of the current UTC day
+//             day: {date, start},    ← equity at the start of the current UTC day
+//             lastQuote, lastPos: {ASSET: {qty, price}} }  ← to tell deposits/withdrawals from market moves
 //           entry is a running cost basis: when the position grows, the new lot is
 //           averaged in at its price; trims keep the basis.
 //
@@ -15,16 +16,40 @@
 // Jaga never buys, never withdraws, never widens exposure.
 
 export function freshState() {
-  return { peak: 0, entries: {}, history: {}, day: null };
+  return { peak: 0, entries: {}, history: {}, day: null, lastQuote: null, lastPos: null };
 }
 
 export function evaluate(snapshot, rules, state) {
   const today = new Date(snapshot.ts ?? Date.now()).toISOString().slice(0, 10);
+  const exposureNow = snapshot.positions.reduce((t, p) => t + p.usd, 0);
+  // Deposits and withdrawals are not market moves. Market moves change prices,
+  // not quantities; trades change quantities and the quote balance by the same
+  // value (minus fees). What's left — quote change + value of quantity changes —
+  // is money entering or leaving the account: rebase peak and the day baseline
+  // by it, so a withdrawal never reads as a drawdown and a deposit never sets a
+  // fake peak. Coin deposits/withdrawals are caught the same way.
+  let flow = 0;
+  const held = [...snapshot.positions, ...(snapshot.unpriced ?? [])];
+  const posNow = Object.fromEntries(held.map((p) => [p.asset, { qty: p.qty, price: p.price }]));
+  if (state.lastPos && state.lastQuote != null) {
+    let tradeValue = 0;
+    for (const a of new Set([...Object.keys(posNow), ...Object.keys(state.lastPos)])) {
+      const now = posNow[a], prev = state.lastPos[a];
+      tradeValue += ((now?.qty ?? 0) - (prev?.qty ?? 0)) * (now?.price ?? prev?.price ?? 0);
+    }
+    const unexplained = (snapshot.quoteFree ?? 0) - state.lastQuote + tradeValue;
+    const lastTotal = state.lastQuote + Object.values(state.lastPos).reduce((t, p) => t + p.qty * p.price, 0);
+    if (Math.abs(unexplained) > Math.max(1, lastTotal * 0.01)) flow = unexplained;
+  }
+  const peakBase = (state.peak ?? 0) + flow;
   const s = {
-    peak: Math.max(state.peak ?? 0, snapshot.total),
+    peak: Math.max(peakBase, snapshot.total),
     entries: { ...state.entries },
     history: { ...state.history },
-    day: state.day?.date === today ? state.day : { date: today, start: snapshot.total }, // new UTC day → new baseline
+    day: state.day?.date === today ? { ...state.day, start: state.day.start + flow } : { date: today, start: snapshot.total }, // new UTC day → new baseline
+    lastQuote: snapshot.quoteFree ?? 0,
+    lastPos: posNow,
+    flow,
   };
   const violations = [];
   const sells = {}; // asset -> { usd, full, qty }
@@ -117,8 +142,19 @@ export function evaluate(snapshot, rules, state) {
     }
   }
 
+  // book-keeping: an asset that left the wallet (sold elsewhere, dusted) loses its
+  // cost basis — a later re-buy starts fresh instead of inheriting a stale entry.
+  // Assets that are merely unpriced this tick keep theirs.
+  const present = new Set([...snapshot.positions, ...(snapshot.unpriced ?? [])].map((p) => p.asset));
+  for (const k of Object.keys(s.entries)) {
+    if (!present.has(k)) {
+      delete s.entries[k];
+      delete s.history[k];
+    }
+  }
+
   // 6a. total exposure cap: too much of the book in non-quote assets → trim each position pro-rata
-  const exposure = snapshot.positions.reduce((t, p) => t + p.usd, 0);
+  const exposure = exposureNow;
   const exposurePct = snapshot.total > 0 ? (exposure / snapshot.total) * 100 : 0;
   if (rules.maxExposurePct && exposurePct > rules.maxExposurePct) {
     const excess = exposure - (snapshot.total * rules.maxExposurePct) / 100;

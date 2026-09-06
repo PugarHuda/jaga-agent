@@ -50,7 +50,7 @@ const ok = (c, m) => {
 };
 
 // the real paper server in replay mode + the real rogue agent, both over HTTP MCP
-const paper = spawn(process.execPath, ["paper-mcp.mjs", "--http", String(MCP_PORT), "--replay", "2024-08-04T20:00:00Z", "--step", "10"], { stdio: ["ignore", "ignore", "pipe"] });
+const paper = spawn(process.execPath, ["paper-mcp.mjs", "--http", String(MCP_PORT), "--replay", "2024-08-04T20:00:00Z", "--step", "10", "--tick", "1"], { stdio: ["ignore", "ignore", "pipe"] });
 let paperErr = "";
 paper.stderr.on("data", (d) => (paperErr += d));
 for (let i = 0; i < 150 && !/paper MCP/.test(paperErr); i++) await new Promise((r) => setTimeout(r, 200));
@@ -162,6 +162,7 @@ try {
   }
   ok(/PANIC: human-triggered/.test(out) && (out.match(/EXECUTED/g) || []).length > executedBeforePanic, "panic liquidated positions through MCP");
   ok(panicEntry && panicSells.length >= panicEntry.positions.length, `audit shows one FILLED full sell per panic target (${panicSells.length}/${panicEntry?.positions.length})`);
+  ok((await page.locator("#pending .ev").count()) === 0 && (await page.evaluate(() => fetch("/state").then((r) => r.json()))).pending.length === 0, "panic clears stale proposals from the dashboard and its boot state");
 
   // the guardian is itself an MCP server other agents can query
   const mcp = new Client({ name: "e2e", version: "1" });

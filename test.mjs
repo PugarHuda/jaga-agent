@@ -88,10 +88,10 @@ ok(r.violations.length === 0 && r.actions.length === 0, "all-in-quote drawdown i
 // 11. Cost basis: a second lot averages the entry, a trim keeps it
 st = freshState();
 r = evaluate(snap([pos("ETH", 4000, 400)], 600), rules, st); // 0.1 ETH @ 4000
-r = evaluate(snap([{ asset: "ETH", qty: 0.2, price: 4800, usd: 960 }], 40), rules, r.state); // +0.1 ETH @ 4800
+r = evaluate(snap([{ asset: "ETH", qty: 0.2, price: 4800, usd: 960 }], 120), rules, r.state); // +0.1 ETH @ 4800 (paid 480)
 ok(Math.abs(r.state.entries.ETH.entry - 4400) < 1e-9, "entry becomes the weighted cost basis (4400)");
 ok(!r.violations.some((v) => v.rule === "take-profit"), "+9% vs basis: no false take-profit after averaging up");
-r = evaluate(snap([{ asset: "ETH", qty: 0.15, price: 4800, usd: 720 }], 280), rules, r.state); // trimmed
+r = evaluate(snap([{ asset: "ETH", qty: 0.15, price: 4800, usd: 720 }], 360), rules, r.state); // trimmed 0.05 (got 240)
 ok(Math.abs(r.state.entries.ETH.entry - 4400) < 1e-9, "a trim keeps the cost basis");
 
 // 12. Per-asset override: BTC tolerates -8% when its stop-loss is 10%
@@ -120,9 +120,36 @@ const daily = { ...rules, maxDailyLossPct: 5 };
 const t0 = Date.UTC(2026, 8, 6, 1, 0, 0);
 r = evaluate({ ...snap([pos("ETH", 4000, 400)], 600), ts: t0 }, daily, freshState()); // day start = 1000
 ok(r.state.day.date === "2026-09-06" && r.state.day.start === 1000, "day baseline recorded at first sight");
-r = evaluate({ ...snap([pos("ETH", 3760, 376)], 564), ts: t0 + 3600e3 }, daily, r.state); // total 940 = -6%
+r = evaluate({ ...snap([pos("ETH", 3400, 340)], 600), ts: t0 + 3600e3 }, daily, r.state); // ETH -15% → total 940 = -6%, quote untouched
 ok(r.violations.some((v) => v.rule === "daily-loss") && r.actions[0].full, "daily-loss de-risks at -6% intraday");
-r = evaluate({ ...snap([pos("ETH", 3760, 376)], 564), ts: t0 + 24 * 3600e3 }, daily, { ...r.state, entries: { ETH: { entry: 3760, high: 3760, qty: 0.1 } } });
+r = evaluate({ ...snap([pos("ETH", 3400, 340)], 600), ts: t0 + 24 * 3600e3 }, daily, { ...r.state, entries: { ETH: { entry: 3400, high: 3400, qty: 0.1 } } });
 ok(r.state.day.date === "2026-09-07" && r.state.day.start === 940 && !r.violations.some((v) => v.rule === "daily-loss"), "next UTC day resets the baseline");
+
+// 16. Deposits/withdrawals are cash flows, not market moves
+st = freshState();
+r = evaluate(snap([pos("ETH", 4000, 400)], 600), rules, st); // total 1000, peak 1000
+r = evaluate(snap([pos("ETH", 4000, 400)], 100), rules, r.state); // user withdrew 500 USDC → total 500
+ok(!r.violations.some((v) => v.rule === "max-drawdown"), "a withdrawal is not a drawdown");
+ok(Math.abs(r.state.peak - 500) < 1e-9 && Math.abs(r.state.day.start - 500) < 1e-9, "peak and day baseline rebased by the withdrawal");
+r = evaluate(snap([pos("ETH", 4000, 400)], 1100), rules, r.state); // deposit 1000 → total 1500
+ok(Math.abs(r.state.peak - 1500) < 1e-9 && Math.abs(r.state.flow - 1000) < 1e-9, "a deposit rebases too (flow detected)");
+r = evaluate(snap([pos("ETH", 3600, 360)], 1100), rules, r.state); // real market move: ETH -10% → total 1460
+ok(Math.abs(r.state.flow) < 1e-9 && r.state.peak === 1500, "a market move is not a flow; peak stays");
+r = evaluate(snap([], 1460), rules, { ...r.state, entries: { ETH: { entry: 4000, high: 4000, qty: 0.1 } } }); // Jaga sold 0.1 ETH @ 3600 → quote +360
+ok(Math.abs(r.state.flow) < 1e-9, "a sell (exposure→quote) is not a flow");
+r = evaluate(snap([pos("BTC", 50000, 500)], 1460), rules, r.state); // 0.01 BTC deposited as a coin, no quote change
+ok(Math.abs(r.state.flow - 500) < 1e-9 && r.state.peak === 2000, "a coin deposit is a flow too (peak rebased, not a windfall)");
+r = evaluate(snap([pos("BTC", 50000, 500)], 1080), rules, r.state); // 380 withdrawn (26% of quote)
+ok(Math.abs(r.state.flow + 380) < 1e-9 && !r.violations.some((v) => v.rule === "max-drawdown"), "withdrawal after a deposit still isn't a drawdown");
+
+// 17. An asset that leaves the wallet loses its stale cost basis
+st = freshState();
+r = evaluate(snap([pos("SOL", 100, 100)], 900), rules, st);
+r = evaluate(snap([], 1000), rules, r.state); // sold elsewhere
+ok(!r.state.entries.SOL, "entry dropped when the asset is gone");
+r = evaluate(snap([pos("SOL", 80, 80)], 920), rules, r.state); // re-bought lower
+ok(r.state.entries.SOL.entry === 80 && !r.violations.some((v) => v.rule === "stop-loss"), "re-buy starts a fresh basis, no phantom -20% stop");
+r = evaluate({ ...snap([], 920), unpriced: [{ asset: "SOL", qty: 1, price: 80, usd: 80 }] }, rules, r.state);
+ok(r.state.entries.SOL, "an asset that is merely unpriced this tick keeps its entry");
 
 console.log(`✅ all ${checks} risk-engine checks passed`);

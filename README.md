@@ -67,7 +67,7 @@ Entries are a **running cost basis**: when a position grows (whoever bought it),
 
 ```bash
 npm install
-npm test          # 31 engine checks + 53 integration checks (live Binance book)
+npm test          # 41 engine checks + 57 integration checks (live Binance book + history)
 npm run paper     # ⭐ REAL Binance market, simulated wallet, real rogue agent — http://localhost:7777
 npm run paper:llm # same, rogue agent driven by an LLM under prompt injection (needs an LLM key)
 npm run demo      # REAL crash, replayed: Binance 1m history from Aug 4-5 2024 (ETH -20%), same stack
@@ -101,6 +101,7 @@ Within ~30 seconds the rogue agent pumps ETH past the 40% cap, Jaga trims it bac
 - **Nothing is simulated except the wallet balance.** Prices are Binance's (live stream or real history), fills walk Binance's real order book, filters are Binance's real filters, the attacker is a real MCP client, and every test suite runs against that.
 - **Sell-only by construction.** The executor can only emit SELL-to-quote orders; the blast radius of any bug is "too safe."
 - **No overlapping ticks.** The guard loop is sequential; a slow MCP or LLM call can never double-execute a sell. Three consecutive failures reconnect the MCP client.
+- **Deposits are not windfalls, withdrawals are not drawdowns.** The engine separates cash flows from market moves (quantity changes vs. quote changes) and rebases the peak and the daily baseline, so topping up or withdrawing from the subaccount never trips a rule.
 - **Only FILLED counts.** A rejected or expired order is surfaced as a failure and retried next tick — never counted as an intervention, never written to the ledger.
 - **Symbols are whitelisted.** Asset names are the only free text that could reach the LLM analyst or the UI from an MCP server; anything that isn't a ticker is dropped at the parser.
 - **Paper mode respects the exchange.** Rate-limit backoff on 429/418, WebSocket staleness fallback to REST, real min-notional filters.
@@ -117,7 +118,7 @@ Within ~30 seconds the rogue agent pumps ETH past the 40% cap, Jaga trims it bac
 | `rogue-agent.mjs` | the attacker: a real MCP client, scripted or LLM-driven under prompt injection |
 | `paper.mjs` | `npm run paper` / `npm run demo` launcher: server (live or replay) + rogue + Jaga on one wallet |
 | `audit-verify.mjs` | verifies the audit trail's SHA-256 chain |
-| `test.mjs` / `test-integration.mjs` / `test-e2e.mjs` | engine (31) / shapes, valuation, filters, config, audit, live paper server incl. LOT_SIZE (53) / Playwright on the real replay stack: approvals, panic, hot reload, metrics, health, webhook alerts, CSRF, MCP tools + resources + prompts, restart reconnect (33) |
+| `test.mjs` / `test-integration.mjs` / `test-e2e.mjs` | engine (41) / shapes, valuation, filters, config, audit, live paper server incl. LOT_SIZE, replay clock (57) / Playwright on the real replay stack: approvals, panic, hot reload, metrics, health, webhook alerts, CSRF, MCP tools + resources + prompts, restart reconnect (34) |
 | `.github/workflows/ci.yml` | CI: all three suites on every push |
 | `config.demo.json` / `config.paper.json` / `config.binance.example.json` | demo, paper & production configs |
 

@@ -11,7 +11,8 @@
     "start": "node jaga.mjs --config config.json",
     "test": "node test.mjs && node test-integration.mjs",
     "test:e2e": "node test-e2e.mjs",
-    "audit:verify": "node audit-verify.mjs"
+    "audit:verify": "node audit-verify.mjs",
+    "backtest": "node backtest.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

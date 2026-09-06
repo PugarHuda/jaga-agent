@@ -184,6 +184,53 @@ try {
   ok(fill.status === "FILLED" && Math.abs(fill.fillPrice - p3.ETHUSDC) < 1e-9 && fill.fee > 0, "replay fills at the historical close with the fee applied");
   await c1.close();
   await c2.close();
+
+  // --- dashboard token auth: remote-safe mode (what Docker/VPS deployments use) ----
+  const DPORT = 7794;
+  const authCfg = JSON.parse(fs.readFileSync("config.demo.json", "utf8"));
+  authCfg.mcp = { url: `http://127.0.0.1:${RPORT}/mcp` };
+  authCfg.dashboard = { port: DPORT, host: "127.0.0.1", token: "correct-horse-battery-staple" };
+  authCfg.rules.mode = "propose";
+  authCfg.intervalSec = 1;
+  const noToken = structuredClone(authCfg);
+  noToken.dashboard = { port: DPORT, host: "0.0.0.0" };
+  ok(validateConfig(noToken).some((e) => /token/.test(e)), "binding beyond loopback without a token is rejected by config validation");
+  const authCfgPath = path.join(os.tmpdir(), `jaga-auth-${process.pid}.json`);
+  fs.writeFileSync(authCfgPath, JSON.stringify(authCfg));
+  const jag = spawn(process.execPath, ["jaga.mjs", "--config", authCfgPath, "--state", path.join(os.tmpdir(), `jaga-auth-${process.pid}-state.json`), "--audit", path.join(os.tmpdir(), `jaga-auth-${process.pid}-audit.jsonl`)], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, OPENROUTER_API_KEY: "", LLM_API_KEY: "", VENICE_API_KEY: "" } });
+  let jout = "";
+  jag.stdout.on("data", (d) => (jout += d));
+  jag.stderr.on("data", (d) => (jout += d));
+  try {
+    for (let i = 0; i < 100 && !/dashboard →/.test(jout); i++) await new Promise((r) => setTimeout(r, 200));
+    ok(/token auth on/.test(jout), "dashboard announces token auth");
+    const base = `http://127.0.0.1:${DPORT}`;
+    ok((await fetch(base + "/")).status === 401, "no token → 401 on the page");
+    ok((await fetch(base + "/metrics")).status === 401 && (await fetch(base + "/state")).status === 401, "no token → 401 on metrics and state");
+    ok((await fetch(base + "/healthz")).status !== 401, "healthz stays open for probes");
+    ok((await fetch(base + "/panic", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status === 401, "no token → panic refused");
+    ok((await fetch(base + "/metrics", { headers: { authorization: "Bearer correct-horse-battery-staple" } })).status === 200, "bearer token → 200");
+    ok((await fetch(base + "/metrics", { headers: { authorization: "Bearer wrong-wrong-wrong-wrong" } })).status === 401, "wrong bearer → 401");
+    const login = await fetch(base + "/?token=correct-horse-battery-staple", { redirect: "manual" });
+    const cookie = login.headers.get("set-cookie") ?? "";
+    ok(login.status === 302 && /jaga=correct-horse-battery-staple/.test(cookie) && /HttpOnly/.test(cookie), "browser login exchanges ?token= for an HttpOnly cookie");
+    ok((await fetch(base + "/", { headers: { cookie: "jaga=correct-horse-battery-staple" } })).status === 200, "cookie → page served");
+    const bad = new Client({ name: "nope", version: "1" });
+    let refused = false;
+    try {
+      await bad.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp")));
+    } catch {
+      refused = true;
+    }
+    ok(refused, "MCP without bearer refused");
+    const good = new Client({ name: "yes", version: "1" });
+    await good.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), { requestInit: { headers: { authorization: "Bearer correct-horse-battery-staple" } } }));
+    ok((await good.listTools()).tools.some((t) => t.name === "risk_status"), "MCP with bearer works (claude mcp add --header)");
+    await good.close();
+  } finally {
+    jag.kill();
+    fs.rmSync(authCfgPath, { force: true });
+  }
 } finally {
   rsrv.kill();
 }

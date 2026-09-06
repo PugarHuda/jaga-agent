@@ -1,0 +1,8 @@
+services:
+  jaga:
+    build: .
+    ports: ["7777:7777"]
+    environment:
+      JAGA_DASHBOARD_TOKEN: ${JAGA_DASHBOARD_TOKEN:-change-me-please-16}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    # command: ["npm", "run", "demo"]   # real Aug-2024 crash replay instead of live paper mode

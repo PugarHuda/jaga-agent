@@ -11,6 +11,19 @@ jobs:
       - run: npm test               # engine + integration (live Binance public book + history)
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e       # Playwright drives the real dashboard on a replayed real crash
+      - run: npm run backtest       # Jaga vs buy-and-hold through the real Aug-2024 crash
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: e2e-dashboard, path: e2e-dashboard.png, if-no-files-found: ignore }
+        with: { name: e2e-and-backtest, path: "e2e-dashboard.png\nbacktest-report.json", if-no-files-found: ignore }
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t jaga .
+      - run: |
+          docker run -d --name jaga -p 7777:7777 -e JAGA_DASHBOARD_TOKEN=ci-token-0123456789 jaga npm run demo
+          for i in $(seq 1 30); do sleep 3; curl -sf http://127.0.0.1:7777/healthz && break; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7777/)" = "401"
+          curl -sf -H 'Authorization: Bearer ci-token-0123456789' http://127.0.0.1:7777/metrics | grep jaga_portfolio_total
+          docker logs jaga | tail -20
+          docker rm -f jaga

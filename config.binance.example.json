@@ -7,7 +7,7 @@
   },
   "tools": { "account": "binance_get_account", "prices": "binance_get_ticker", "order": "binance_create_order", "symbolInfo": "binance_exchange_info (optional: enables LOT_SIZE-exact quantity sells)" },
   "intervalSec": 30,
-  "dashboard": { "port": 7777 },
+  "dashboard": { "port": 7777, "_remote": "to expose beyond localhost (Docker, a VPS): \"host\": \"0.0.0.0\" plus \"token\": \"<16+ chars>\" (or env JAGA_DASHBOARD_TOKEN); open /?token=… once in the browser, send Authorization: Bearer for curl/MCP" },
   "advisor": { "everyTicks": 20 },
   "alerts": { "webhook": "https://discord.com/api/webhooks/... (optional)" },
   "llm": {

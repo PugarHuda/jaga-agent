@@ -501,6 +501,8 @@ async function main() {
         metrics: () => metrics(ctx),
         health: () => health(ctx),
         mcp: jagaMcpHandler(ctx),
+        host: cfg.dashboard.host,
+        token: process.env.JAGA_DASHBOARD_TOKEN || cfg.dashboard.token || null,
       })
     : null;
   if (ctx.dash) replayEquity(ctx.dash);

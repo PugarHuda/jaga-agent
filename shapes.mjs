@@ -79,6 +79,10 @@ export function validateConfig(cfg) {
   if (!cfg?.mcp?.url && !cfg?.mcp?.command) errs.push("mcp.url or mcp.command is required");
   for (const k of ["account", "prices", "order"]) if (typeof cfg?.tools?.[k] !== "string") errs.push(`tools.${k} (MCP tool name) is required`);
   if (cfg?.intervalSec !== undefined && !(cfg.intervalSec >= 1)) errs.push("intervalSec must be >= 1");
+  const d = cfg?.dashboard;
+  if (d?.host && !/^(127\.0\.0\.1|localhost|::1)$/.test(d.host) && !(d.token || process.env.JAGA_DASHBOARD_TOKEN))
+    errs.push("dashboard.host binds beyond loopback — set dashboard.token (or JAGA_DASHBOARD_TOKEN) so approvals/panic/MCP need auth");
+  if (d?.token !== undefined && !(typeof d.token === "string" && d.token.length >= 16)) errs.push("dashboard.token must be a string of at least 16 characters");
   return errs;
 }
 

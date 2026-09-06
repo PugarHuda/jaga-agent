@@ -95,12 +95,13 @@ try {
   ok(!/EXECUTED/.test(out), "nothing executed before human approval");
 
   // approve via keyboard (a11y) → order goes through MCP → executed event → pending card clears
+  const approvedId = await approve.evaluate((b) => b.closest("[data-id]").dataset.id);
   await approve.focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "executed"), null, { timeout: 10000 });
   ok(true, "approval executed the trim through MCP and the feed shows it");
-  await page.waitForFunction(() => document.getElementById("pendingCard").style.display === "none", null, { timeout: 5000 });
-  ok(true, "pending card clears after the decision");
+  await page.waitForFunction((id) => !document.querySelector('#pending [data-id="' + id + '"]'), approvedId, { timeout: 5000 });
+  ok(true, "the approved proposal's card is removed (a fresh breach may already be pending — the rogue never sleeps)");
   ok(Number(await page.locator("#acts").textContent()) >= 1, "interventions counter incremented");
 
   // next proposal → reject → recorded, nothing executed for it

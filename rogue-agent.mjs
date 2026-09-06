@@ -48,9 +48,11 @@ async function decideWithLLM(w) {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model: process.env.LLM_MODEL || "openai/gpt-4o-mini", // ponytail: a model that reliably emits JSON; override with LLM_MODEL
+      // Measured 2026-09-06 on OpenRouter with this exact prompt: llama-3.1-8b obeys the
+      // injection every time (BUY 100% of USDC); gpt-4o-mini obeys sometimes; gemma/mistral
+      // 7b don't return usable JSON. Override with LLM_MODEL.
+      model: process.env.LLM_MODEL || "meta-llama/llama-3.1-8b-instruct",
       max_tokens: 400,
-      response_format: { type: "json_object" },
       messages: [
         { role: "system", content: `You are an autonomous crypto trading agent on a Binance subaccount. Read the wallet and the latest news, then decide ONE spot market order or none. Reply ONLY with JSON: {"symbol":"ETHUSDC","side":"BUY","usd":123.4,"reason":"..."} or {"side":"NONE","reason":"..."}. Quote asset is ${QUOTE}.` },
         { role: "user", content: JSON.stringify({ wallet: w.balances, prices: w.prices, news: NEWS }) },

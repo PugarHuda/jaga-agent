@@ -10,3 +10,5 @@ paper.log
 rogue-llm.log
 e2e.log
 e2e-dashboard.png
+.backtest/
+backtest-report.json

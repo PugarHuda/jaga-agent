@@ -142,7 +142,7 @@ es.onmessage=m=>{
 };
 </script></body></html>`;
 
-export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp: mcpHandler } = {}) {
+export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp: mcpHandler, host = "127.0.0.1", token = null } = {}) {
   const clients = new Set();
   const store = { series: [], events: [], actions: 0, lastTick: null, pending: [] };
   const broadcast = (ev) => {
@@ -150,17 +150,40 @@ export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp
     clients.forEach((c) => c.write(line));
   };
 
+  // Auth: with a token configured, every route except /healthz needs it — as a
+  // Bearer header (curl, MCP clients, Prometheus) or the cookie the browser gets by
+  // opening /?token=… once. Required whenever the dashboard binds beyond loopback.
+  const authed = (req) => {
+    if (!token) return true;
+    const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    const cookie = (req.headers.cookie ?? "").split(";").map((c) => c.trim()).find((c) => c.startsWith("jaga="))?.slice(5);
+    return bearer === token || cookie === token;
+  };
   // CSRF guard for state-changing POSTs: browsers always send Origin on cross-site
   // POSTs — reject any origin that isn't this dashboard itself (curl/local tools send
   // none). JSON-only: an HTML form can't send that content-type cross-site without preflight.
   const guarded = (req, res) => {
     const origin = req.headers.origin;
-    if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return res.writeHead(403).end(), false;
+    let self = false;
+    try {
+      self = Boolean(origin && req.headers.host && new URL(origin).host === req.headers.host);
+    } catch {} // Origin: null (sandboxed/about:blank pages) is not a URL — treat as foreign
+    if (origin && !self && !/^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return res.writeHead(403).end(), false;
     if (!/^application\/json/.test(req.headers["content-type"] ?? "")) return res.writeHead(415).end(), false;
     return true;
   };
 
   const server = http.createServer((req, res) => {
+    const url = new URL(req.url, "http://x");
+    if (token && url.pathname === "/" && url.searchParams.get("token") === token) {
+      // browser login: exchange ?token= for a cookie, then land on the clean URL
+      res.writeHead(302, { "set-cookie": `jaga=${token}; HttpOnly; SameSite=Strict; Path=/`, location: "/" }).end();
+      return;
+    }
+    if (url.pathname !== "/healthz" && !authed(req)) {
+      res.writeHead(401, { "content-type": "text/plain", "www-authenticate": "Bearer" }).end("unauthorized — open /?token=<dashboard.token> or send Authorization: Bearer");
+      return;
+    }
     if (req.method === "POST" && req.url === "/panic") {
       if (!guarded(req, res)) return;
       Promise.resolve(onPanic?.()).catch((e) => console.error("panic failed:", e.message));
@@ -209,8 +232,8 @@ export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp
       res.end(PAGE.replace("__BOOT__", JSON.stringify(store).replace(/</g, "\\u003c")));
     }
   });
-  // loopback only — the approval endpoint must never be reachable from the LAN
-  server.listen(port, "127.0.0.1", () => console.log(`📊 dashboard → http://localhost:${port}`));
+  // loopback by default — beyond it, config validation insists on a token
+  server.listen(port, host, () => console.log(`📊 dashboard → http://${host === "0.0.0.0" ? "localhost" : host}:${port}${token ? "/?token=…  (token auth on)" : ""}`));
   const heartbeat = setInterval(() => clients.forEach((c) => c.write(":hb\n\n")), 15000);
 
   return {

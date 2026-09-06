@@ -250,5 +250,8 @@ try {
   rogue.kill();
   paper.kill();
   hook.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  // jaga persists state on SIGTERM — wait for it to actually exit, or the cleanup
+  // races its last write and rmSync dies with ENOTEMPTY on a green run
+  if (jaga.exitCode === null) await Promise.race([new Promise((r) => jaga.once("exit", r)), new Promise((r) => setTimeout(r, 5000))]);
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

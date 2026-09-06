@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel, screenPrices } from "./shapes.mjs";
+import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel, screenPrices, serializer } from "./shapes.mjs";
 import { verifyAudit } from "./audit-verify.mjs";
 
 let checks = 0;
@@ -75,6 +75,25 @@ sc = screenPrices({ ETHUSDC: 2500 }, { ETHUSDC: 2510 }, new Set(["ETHUSDC"]));
 ok(sc.prices.ETHUSDC === 2510 && sc.flagged.length === 0, "a glitch that goes away leaves no trace");
 sc = screenPrices(null, { ETHUSDC: 1 }, new Set());
 ok(sc.prices.ETHUSDC === 1 && sc.flagged.length === 0, "first tick has nothing to compare against");
+
+// --- serializer: ticks, approvals and panic never overlap -----------------------------
+const only = serializer();
+let live = 0, maxLive = 0;
+const job = (ms, fail) =>
+  only(async () => {
+    maxLive = Math.max(maxLive, ++live);
+    await new Promise((r) => setTimeout(r, ms));
+    live--;
+    if (fail) throw new Error("boom");
+  });
+const order = [];
+await Promise.all([
+  job(30).then(() => order.push("a")),
+  job(1, true).catch(() => order.push("b")),
+  job(1).then(() => order.push("c")),
+]);
+ok(maxLive === 1, "only one selling path runs at a time (a panic click can't overlap a tick)");
+eq(order.join(""), "abc", "queued work keeps its order and survives a failure in the middle");
 
 // --- audit rotation: the chain continues into the .1 file ------------------------------
 const rot = path.join(os.tmpdir(), `jaga-rot-${process.pid}.jsonl`);

@@ -31,11 +31,15 @@ let r = evaluate(snap([pos("BTC", 100000, 100)], 200), rules, freshState());
 ok(r.violations.length === 0, "healthy: no violations");
 ok(r.state.entries.BTC.entry === 100000 && r.state.peak === 300, "healthy: entry+peak recorded");
 
-// 2. Stop-loss: -6% from entry → full liquidation, book reset
+// 2. Stop-loss: -6% from entry → full liquidation; the book survives until a fill is confirmed
 r = evaluate(snap([pos("BTC", 94000, 94)], 200), rules, r.state);
 ok(r.violations.some((v) => v.rule === "stop-loss"), "stop-loss fires at -6%");
 ok(r.actions[0].full && r.actions[0].symbol === "BTCUSDC", "stop-loss sells everything");
-ok(!r.state.entries.BTC, "stop-loss resets the book");
+ok(r.state.entries.BTC.entry === 100000, "a proposed sell keeps the cost basis (nothing filled yet)");
+r = evaluate(snap([pos("BTC", 94000, 94)], 200), rules, r.state);
+ok(r.violations.some((v) => v.rule === "stop-loss"), "an unapproved breach is still reported next tick, not re-entered at the crashed price");
+r = evaluate(snap([], 294), rules, r.state); // the sell filled: the asset is gone from the wallet
+ok(!r.state.entries.BTC && !r.state.history.BTC, "once the position leaves the wallet the book is dropped");
 
 // 3. Trailing stop: price ran +8% (below TP) then fell 5% off the high → lock gains
 let st = freshState();

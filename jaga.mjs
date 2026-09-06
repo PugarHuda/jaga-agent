@@ -13,8 +13,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { evaluate, freshState } from "./engine.mjs";
+const VERSION = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
 import { startDashboard } from "./dashboard.mjs";
-import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel, screenPrices } from "./shapes.mjs";
+import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel, screenPrices, serializer } from "./shapes.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -69,7 +70,7 @@ function audit(entry) {
 
 // --- MCP plumbing ----------------------------------------------------------
 async function connectMcp(cfg) {
-  const client = new Client({ name: "jaga", version: "2.1.0" });
+  const client = new Client({ name: "jaga", version: VERSION });
   const transport = cfg.mcp.url
     ? new StreamableHTTPClientTransport(new URL(cfg.mcp.url), {
         // ponytail: bearer from env (e.g. token copied after OAuth in Claude Code /mcp); no OAuth dance in Jaga itself
@@ -243,6 +244,12 @@ async function execute(ctx, a) {
   const fillPrice = Number(res.fillPrice) || (qty ? Number(res.cummulativeQuoteQty ?? a.usd) / qty : 0);
   if (qty && fillPrice) ctx.ledger.push({ asset, qty, fillPrice });
   if (ctx.ledger.length > 200) ctx.ledger.shift(); // ponytail: rolling window, not forever
+  if (a.full) {
+    // the position is really gone now — drop its cost basis and price window so a
+    // dust remainder or a later re-buy starts fresh (the engine never guesses this)
+    delete ctx.state.entries[asset];
+    delete ctx.state.history[asset];
+  }
   ctx.interventions++;
   console.log(`   ✅ EXECUTED ${a.side} ${a.symbol} ~${a.usd}: FILLED`);
   dash?.emit({ type: "action", rule: "executed", text: `${a.side} ${a.symbol} ~${a.usd} → FILLED` });
@@ -252,7 +259,7 @@ async function execute(ctx, a) {
 // Emergency stop: the human hits the red button → everything sellable goes to quote
 // NOW, regardless of mode. Deterministic, audited, no LLM involved.
 async function panic(ctx) {
-  const s = await takeSnapshot(ctx.mcp, ctx.cfg); // fresh: never size a sell off a stale tick
+  const s = await takeSnapshot(ctx.mcp, ctx.cfg, ctx); // fresh + screened: never size a sell off a stale tick or a glitch print
   const targets = s.positions.filter((p) => p.usd >= ctx.cfg.rules.minTradeUsd);
   console.log(`🚨 PANIC: human-triggered de-risk of ${targets.length} position(s)`);
   audit({ type: "panic", positions: targets.map((p) => p.asset) });
@@ -350,6 +357,10 @@ function watchConfig(ctx) {
 function propose(ctx, a) {
   // one open proposal per symbol — re-proposing the same breach every tick is noise
   if ([...ctx.pending.values()].some((p) => p.symbol === a.symbol)) return;
+  // a human said no: the breach is still real (the book is only reset by a fill), but
+  // asking again every tick is nagging. ponytail: fixed 20-tick snooze, make it a config
+  // knob if anyone ever wants a different patience.
+  if ((ctx.snooze.get(a.symbol) ?? 0) > ctx.ticks) return;
   const id = crypto.randomUUID(); // unguessable — an attacker can't forge approvals blind
   ctx.pending.set(id, a);
   console.log(`   📋 PROPOSED ${a.side} ${a.symbol} ~$${a.usd} (awaiting approval on dashboard)`);
@@ -363,7 +374,11 @@ async function onDecision(ctx, id, approve) {
   ctx.pending.delete(id);
   audit({ type: "decision", id, approve, ...a });
   if (approve) await execute(ctx, a);
-  else ctx.dash?.emit({ type: "violation", rule: "rejected", text: `human rejected ${a.side} ${a.symbol} ~$${a.usd}` });
+  else {
+    ctx.snooze.set(a.symbol, ctx.ticks + 20);
+    console.log(`   🙅 REJECTED ${a.side} ${a.symbol} — not re-proposing for 20 ticks`);
+    ctx.dash?.emit({ type: "violation", rule: "rejected", text: `human rejected ${a.side} ${a.symbol} ~$${a.usd} — snoozed for 20 ticks` });
+  }
   persist(ctx);
 }
 
@@ -483,17 +498,24 @@ async function tick(ctx) {
     limits: { maxDrawdownPct: cfg.rules.maxDrawdownPct, maxPositionPct: cfg.rules.maxPositionPct },
   });
 
+  // a breach that hasn't been cleared is still a breach — it stays in the audit trail
+  // every tick, but the feed, the LLM and your phone only hear about it once.
+  const sig = violations.map((v) => `${v.rule}:${v.asset}`).sort().join("|");
+  const repeat = sig !== "" && sig === ctx.lastSig;
+  ctx.lastSig = sig;
+
   if (violations.length) {
-    console.log("⚠️  VIOLATIONS:");
+    console.log(repeat ? "⚠️  VIOLATIONS (unchanged):" : "⚠️  VIOLATIONS:");
     for (const v of violations) {
       console.log(`   [${v.rule}] ${v.detail}`);
       audit({ type: "violation", ...v });
-      dash?.emit({ type: "violation", rule: v.rule, text: v.detail });
+      if (!repeat) dash?.emit({ type: "violation", rule: v.rule, text: v.detail });
     }
     for (const a of actions) {
       if (cfg.rules.mode === "execute") await execute(ctx, a);
       else propose(ctx, a);
     }
+    if (repeat) return persist(ctx); // already narrated and alerted on this exact breach
     // narration runs off the critical path: the next tick never waits for an LLM
     ctx.inflight = narrate(cfg, snapshot, violations, actions, cfg.rules.mode).then(async (report) => {
       console.log("\n🧠 Jaga report:\n" + report + "\n");
@@ -539,16 +561,19 @@ async function main() {
     headroom: [],
     lastPrices: null,
     suspect: new Set(),
+    snooze: new Map(),
+    lastSig: "",
     last: null,
     lastViolations: [],
     lastTickAt: null,
     dash: null,
     mcp: null,
   };
+  const only = serializer(); // ticks, approvals and panic never run on top of each other
   ctx.dash = cfg.dashboard?.port
     ? startDashboard(cfg.dashboard.port, {
-        onDecision: (id, approve) => onDecision(ctx, id, approve),
-        onPanic: () => panic(ctx),
+        onDecision: (id, approve) => only(() => onDecision(ctx, id, approve)),
+        onPanic: () => only(() => panic(ctx)),
         metrics: () => metrics(ctx),
         health: () => health(ctx),
         mcp: jagaMcpHandler(ctx),
@@ -579,7 +604,7 @@ async function main() {
     for (const t of (await ctx.mcp.listTools()).tools) console.log(`\n## ${t.name}\n${t.description ?? ""}\n${JSON.stringify(t.inputSchema)}`);
     process.exit(0);
   }
-  await tick(ctx);
+  await only(() => tick(ctx));
   if (flag("--once")) {
     await ctx.inflight; // let the report land before exiting
     process.exit(0);
@@ -591,7 +616,7 @@ async function main() {
   for (;;) {
     await sleep((cfg.intervalSec ?? 10) * 1000);
     try {
-      await tick(ctx);
+      await only(() => tick(ctx));
       failures = 0;
     } catch (e) {
       console.error("tick failed:", e.message);

@@ -1,6 +1,6 @@
 {
   "name": "jaga",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Jaga — an AI risk-guardian agent for Binance Agent OS (MCP)",
   "type": "module",
   "main": "jaga.mjs",

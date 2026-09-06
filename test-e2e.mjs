@@ -128,12 +128,20 @@ try {
   const reject = page.getByRole("button", { name: "❌ Reject" }).first();
   await reject.waitFor({ state: "visible", timeout: 60000 });
   const executedBefore = (out.match(/EXECUTED/g) || []).length;
+  const rejectedSymbol = (await reject.evaluate((b) => b.closest("[data-id]").textContent)).match(/SELL (\w+)/)[1];
   await reject.focus();
   await page.keyboard.press("Space"); // keyboard-only users can reject too
   await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "rejected"), null, { timeout: 10000 });
   ok(true, "rejection shows in the feed");
   await new Promise((r) => setTimeout(r, 1500));
   ok((out.match(/EXECUTED/g) || []).length === executedBefore, "rejected proposal was not executed");
+  // "no" means no for a while: the breach is still real (the book is only reset by a fill),
+  // but Jaga must not re-ask on the very next tick
+  await new Promise((r) => setTimeout(r, 4000)); // 4 ticks
+  ok(
+    !(await page.evaluate((sym) => [...document.querySelectorAll("#pending [data-id]")].some((e) => e.textContent.includes(sym)), rejectedSymbol)),
+    "a rejected sell is not re-proposed on the next ticks (snoozed)"
+  );
 
   // CSRF: a cross-origin JSON POST is refused; a wrong content-type is refused
   const csrf = await page.evaluate(async (port) => {

@@ -179,3 +179,15 @@ export function screenPrices(prev, now, suspect, maxJumpPct = 25) {
   }
   return { prices: out, suspect: nextSuspect, flagged };
 }
+
+// One writer at a time. The tick loop, an approval click and the panic button all
+// place sells, and they arrive on different callbacks — overlapping them can sell
+// the same position twice. Everything that trades goes through this queue.
+export function serializer() {
+  let queue = Promise.resolve();
+  return (fn) => {
+    const run = queue.then(fn);
+    queue = run.catch(() => {}); // one failure must not break the chain
+    return run;
+  };
+}

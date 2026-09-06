@@ -16,6 +16,9 @@
 // Returns { violations, actions, state, headroom }. headroom = every rule's current
 // reading vs its limit (pct = how close to tripping), sorted hottest first — the
 // deterministic answer to "what's closest to tripping", no LLM needed.
+// The book (entry/history) is reset by whoever confirms a fill, not here: a proposed
+// or failed sell must keep its cost basis, or the next tick would re-enter at the
+// crashed price and the breach would silently disappear.
 // Actions are SELL-to-quote orders only —
 // Jaga never buys, never withdraws, never widens exposure.
 
@@ -224,14 +227,6 @@ export function evaluate(snapshot, rules, state) {
       full: x.full,
       ...(x.full && x.qty ? { qty: x.qty } : {}), // full sells carry the exact base quantity → sized as a quantity order, never over-asks
     }));
-
-  // full liquidation resets the book for that asset so remainders/dust can't re-trigger
-  for (const a of actions) {
-    if (!a.full) continue;
-    const asset = a.symbol.slice(0, -snapshot.quote.length);
-    delete s.entries[asset];
-    delete s.history[asset];
-  }
 
   headroom.sort((a, b) => b.pct - a.pct);
   return { violations, actions, state: s, headroom };

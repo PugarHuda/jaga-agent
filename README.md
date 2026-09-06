@@ -4,10 +4,14 @@
 
 Everyone is building agents that **trade**. Jaga is the agent that **guards** — because Binance itself admits the blind spot: *"We really cannot see the reasoning of what the user's action is."* When a trading agent gets prompt-injected, hallucinates, or just holds through a crash, Jaga is the independent second agent watching the subaccount and enforcing hard risk rules it cannot be talked out of.
 
+**Not a gate in front of the trade — a guard on the wallet behind it.** A pre-trade checker only sees the orders it is asked about; it cannot help when the position was already opened, when the market moves after the fill, or when a second agent shares the same subaccount. Jaga watches what the account actually holds, every few seconds, and when a limit breaks it **places the sell** (or asks you to approve it). That is the whole difference: it acts on the book, not on a request.
+
+▶️ **[See it run — no install](https://jaga-live-demo.vercel.app)** (a recorded run of the real stack, replaying in your browser)
+
 Built for the **Binance Agent OS Mini Hackathon** (Track A). [![ci](https://github.com/PugarHuda/jaga-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/PugarHuda/jaga-agent/actions/workflows/ci.yml)
 
 ![Jaga live dashboard — replaying the Aug 2024 crash: a rogue agent pushes ETH to 56.8% of the book, Jaga trims it back, the rule-headroom panel shows what is closest to tripping, and the AI analyst explains the incident after the fact](dashboard.png)
-*`npm run paper`, live shot: real Binance prices over WebSocket, a real second agent buying ETH through the same MCP server, Jaga trimming it back under the 40% cap through MCP — 5 interventions, audit chain intact.*
+*Real Binance prices, a real second agent buying ETH through the same MCP server, Jaga trimming it back under the 40% cap through MCP, and the AI analyst explaining it afterwards. The [browser demo](https://jaga-live-demo.vercel.app) is this exact stack, recorded.*
 
 ## The one idea that matters
 

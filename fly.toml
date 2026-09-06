@@ -1,0 +1,30 @@
+# Public live demo: paper mode (real Binance WebSocket prices, simulated wallet) with the
+# rogue agent and Jaga sharing one subaccount.  fly deploy  — then open /?token=<the token>.
+# The dashboard binds 0.0.0.0 in the image, so config validation requires JAGA_DASHBOARD_TOKEN:
+#   fly secrets set JAGA_DASHBOARD_TOKEN=<16+ chars>
+#   fly secrets set OPENROUTER_API_KEY=<optional, turns on the AI analyst>
+app = "jaga-guard"
+primary_region = "sin"
+
+[build]
+
+[env]
+  JAGA_LOG = "json"
+
+[http_service]
+  internal_port = 7777
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "45s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

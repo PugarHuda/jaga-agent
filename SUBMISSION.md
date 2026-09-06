@@ -2,7 +2,9 @@
 
 ## Checklist
 
-- [x] Repo pushed: https://github.com/PugarHuda/jaga-agent
+- [x] Repo pushed: https://github.com/PugarHuda/jaga-agent (MIT, CI green, 187 tests)
+- [x] Live demo, no install: https://jaga-live-demo.vercel.app (recorded run of the real stack, replayed in the browser; rebuild with `node build-demo.mjs`)
+- [x] Ecosystem presence: skill PR to the official hub — https://github.com/binance/binance-skills-hub/pull/334 (`skills/jaga-risk-guard`)
 - [ ] Follow @Binance + repost the announcement post
 - [x] Video recorded: `jaga-demo.mp4` (v5, narrated: hook, live paper mode, the real Aug-2024 crash replay, the idea, close). Its claims — 8 rules, 150+ checks, 0 LLM calls in the trade path, MCP client + server — all still hold at 187 checks, so it needs no re-render.
 - [ ] Reply/quote-repost with video + GitHub link (draft below)
@@ -23,11 +25,22 @@ Before re-recording: `OPENROUTER_API_KEY` is already set as a Windows user env v
 
 > 🛡️ Jaga — the agent that guards the agents. (Track A)
 >
-> Everyone builds agents that trade. Jaga watches your Agent OS subaccount and enforces 8 hard risk rules a prompt injection can't talk it out of: stop-loss, trailing stop, take-profit, concentration, exposure, circuit breaker, daily loss, max drawdown.
+> Everyone is building a gate *before* the trade. Jaga guards the wallet *after* it: 8 hard rules on what the subaccount actually holds — stop-loss, trailing stop, take-profit, concentration, exposure, circuit breaker, daily loss, drawdown — and when one breaks it places the sell through MCP. Arithmetic decides; a prompt injection has nothing to talk to.
 >
-> Code enforces. AI explains. Live dashboard, hash-chained audit trail, AI incident reports, panic button, Prometheus, Docker. MCP client AND server. Backtested on the real Aug-2024 crash: 3-4% ahead of holding while a rogue agent pumped ETH.
+> In the demo a second, LLM-driven agent shares the same subaccount and keeps piling into ETH under a poisoned news feed. Jaga trims it back every time, hash-chains every decision, and the AI analyst explains the incident afterwards — outside the trade path. Backtested on the real Aug-2024 crash: 3-4% ahead of holding.
 >
-> 🎥 demo below · 💻 github.com/PugarHuda/jaga-agent
+> ▶️ Try it, no install: jaga-live-demo.vercel.app
+> 💻 github.com/PugarHuda/jaga-agent
+> 🧩 Skill PR to the official hub: binance/binance-skills-hub#334
+> 🎥 demo video below
+
+**Short version (if the reply has to fit 280 chars):**
+
+> 🛡️ Jaga — everyone builds a gate *before* the trade; Jaga guards the wallet *after* it. 8 deterministic rules on what your Agent OS subaccount actually holds, and it places the sell itself. A rogue LLM agent shares the wallet in the demo.
+>
+> jaga-live-demo.vercel.app · github.com/PugarHuda/jaga-agent
+
+**When you post, ask for the one thing judges score and I cannot do:** a ⭐ and a reply with feedback. "Community validation" is an explicit criterion in Binance/BNB judging.
 
 ## Notes
 

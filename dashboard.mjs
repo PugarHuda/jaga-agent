@@ -2,7 +2,7 @@
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 
-const PAGE = /* html */ `<!doctype html>
+export const PAGE = /* html */ `<!doctype html>
 <html><head><meta charset="utf-8"><title>Jaga 🛡️ — live guard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>

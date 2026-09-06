@@ -37,7 +37,10 @@ function audit(entry) {
 async function connectMcp(cfg) {
   const client = new Client({ name: "jaga", version: "2.0.0" });
   const transport = cfg.mcp.url
-    ? new StreamableHTTPClientTransport(new URL(cfg.mcp.url))
+    ? new StreamableHTTPClientTransport(new URL(cfg.mcp.url), {
+        // ponytail: bearer from env (e.g. token copied after OAuth in Claude Code /mcp); no OAuth dance in Jaga itself
+        requestInit: { headers: { ...(cfg.mcp.headers ?? {}), ...(process.env.MCP_BEARER_TOKEN ? { authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` } : {}) } },
+      })
     : new StdioClientTransport({ command: cfg.mcp.command, args: cfg.mcp.args ?? [], env: { ...process.env, ...cfg.mcp.env } });
   await client.connect(transport);
   return client;
@@ -272,6 +275,14 @@ async function main() {
     : null;
   console.log(`Jaga 🛡️  guarding via MCP (${cfg.mcp.url ?? cfg.mcp.command}) — mode=${cfg.rules.mode}`);
   ctx.mcp = await connectMcp(cfg);
+  if (flag("--list-tools")) {
+    // discover real tool names + schemas so config.tools can be mapped without guessing
+    for (const t of (await ctx.mcp.listTools()).tools) console.log(`
+## ${t.name}
+${t.description ?? ""}
+${JSON.stringify(t.inputSchema)}`);
+    process.exit(0);
+  }
   await tick(ctx);
   if (flag("--once")) process.exit(0);
   setInterval(async () => {

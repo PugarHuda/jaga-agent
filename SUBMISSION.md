@@ -31,13 +31,14 @@ Before re-recording: `OPENROUTER_API_KEY` is already set as a Windows user env v
 ## Notes
 
 - Network: Binance domains are blocked on Telkomsel — use VPN/alt DNS for the real-MCP config and Track B.
-## Track B — step by step (~1h, needs VPN on Telkomsel)
+## Track B — step by step (VPN on; verified 2026-09-06)
 
-1. Binance app → search "Agent OS" / MCP → create a **dedicated subaccount**, deposit small (e.g. $15–20), generate the MCP access for it. The app shows the official MCP endpoint/config — copy it.
-2. Connect Claude Code to it (shape depends on what the app gives you):
-   - Remote endpoint: `claude mcp add binance --transport http <ENDPOINT_URL>`
-   - Or community stdio server as fallback:
-     `claude mcp add binance --env BINANCE_API_KEY=... --env BINANCE_API_SECRET=... -- npx -y binance-mcp-server`
-3. In Claude Code: ask for account balance (proves read), then one tiny trade (e.g. market buy $6 BTC) — that's the qualifying MCP trade.
-4. Complete the survey from the tweet (open inside the Binance app), follow + repost if not done.
-5. Bonus: point Jaga at the same MCP (`config.json`) and let it guard the subaccount for real — that clip also upgrades the Track A video.
+Official endpoint: `https://agent.binance.com/mcp/agentic` (Streamable HTTP, OAuth 2.1 PKCE, no API keys). Docs: developers.binance.com/en/docs/agent-native/mcp-server/agentic. Reachable through VPN (401 + OAuth metadata confirmed; api.binance.com still 451 without it).
+
+1. **Done:** `claude mcp add binance-mcp-server --transport http https://agent.binance.com/mcp/agentic` (registered in this project's Claude Code config).
+2. In Claude Code type `/mcp` → pick **binance-mcp-server** → browser opens Binance consent screen → grant **Account + Trade** scopes (skip Transfer). The Agentic subaccount is created automatically on first authorization.
+3. Fund the subaccount manually (agent cannot pull from main): https://www.binance.com/en/my/sub-account/asset-management/transfer?asset=USDC — small, e.g. $15–20 USDC.
+4. In Claude Code (new session so the tools load): "Use the Binance MCP Server to show BTCUSDT price and 24h change" (proves connect), then "show my Agentic subaccount balance", then "market buy $6 of BTC with USDC on spot" → confirm when it restates the order. That's the qualifying Track B trade. Screenshot it.
+5. Survey (mandatory for both tracks), follow + repost if not done.
+6. Bonus — Jaga guarding the real subaccount: copy the access token from Claude Code's MCP credentials (`~/.claude/.credentials.json` → mcpOAuth → binance-mcp-server), then
+   `cp config.binance.example.json config.json`, `set MCP_BEARER_TOKEN=...`, `node jaga.mjs --config config.json --list-tools` → map real tool names into `config.tools`, keep `"mode": "propose"`, `npm start`. The real server's account/price response shapes may differ from the mock — `takeSnapshot()` in jaga.mjs is the one place to adapt.

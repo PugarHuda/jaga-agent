@@ -1,7 +1,8 @@
 {
   "_comment": "Copy to config.json and point it at your Binance MCP server. Tool names are remappable to whatever your MCP server exposes — no code changes needed. Use a dedicated Agent OS subaccount with a small balance.",
   "mcp": {
-    "url": "https://YOUR-BINANCE-MCP-ENDPOINT/mcp",
+    "url": "https://agent.binance.com/mcp/agentic",
+    "_auth": "official server uses OAuth: authenticate once via Claude Code (/mcp), then run Jaga with MCP_BEARER_TOKEN=<access_token>. Run `node jaga.mjs --config config.json --list-tools` to see real tool names, then fill tools.* below.",
     "_or_stdio": { "command": "npx", "args": ["-y", "your-binance-mcp"], "env": { "BINANCE_API_KEY": "...", "BINANCE_API_SECRET": "..." } }
   },
   "tools": { "account": "binance_get_account", "prices": "binance_get_ticker", "order": "binance_create_order" },

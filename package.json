@@ -1,18 +1,24 @@
 {
   "name": "jaga",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Jaga — an AI risk-guardian agent for Binance Agent OS (MCP)",
   "type": "module",
   "main": "jaga.mjs",
   "scripts": {
     "demo": "node jaga.mjs --config config.demo.json",
-    "paper": "node jaga.mjs --config config.paper.json",
+    "paper": "node paper.mjs",
+    "paper:llm": "node paper.mjs --llm",
     "once": "node jaga.mjs --config config.demo.json --once",
     "start": "node jaga.mjs --config config.json",
-    "test": "node test.mjs"
+    "test": "node test.mjs && node test-integration.mjs",
+    "test:e2e": "node test-e2e.mjs",
+    "audit:verify": "node audit-verify.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
   }
 }

@@ -1,10 +1,20 @@
 {
-  "_comment": "Paper mode: REAL live Binance prices, simulated wallet. Tighter thresholds than production so interventions are visible on a demo timescale.",
-  "mcp": { "command": "node", "args": ["paper-mcp.mjs", "--rogue"] },
-  "tools": { "account": "get_account", "prices": "get_prices", "order": "place_order" },
+  "_comment": "Paper mode: REAL live Binance prices (WebSocket) + order-book fills, simulated wallet shared with a rogue trading agent over HTTP MCP (see paper.mjs). Tighter thresholds than production so interventions are visible on a demo timescale.",
+  "mcp": {
+    "url": "http://127.0.0.1:7788/mcp"
+  },
+  "tools": {
+    "account": "get_account",
+    "prices": "get_prices",
+    "order": "place_order"
+  },
   "intervalSec": 5,
-  "dashboard": { "port": 7777 },
-  "advisor": { "everyTicks": 6 },
+  "dashboard": {
+    "port": 7777
+  },
+  "advisor": {
+    "everyTicks": 6
+  },
   "rules": {
     "quote": "USDC",
     "maxPositionPct": 40,
@@ -13,7 +23,10 @@
     "trailingStopPct": 1,
     "takeProfitPct": 2,
     "minTradeUsd": 10,
-    "volatility": { "window": 6, "dropPct": 1 },
+    "volatility": {
+      "window": 6,
+      "dropPct": 1
+    },
     "mode": "execute"
   }
 }

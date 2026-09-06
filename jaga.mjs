@@ -1,14 +1,20 @@
 // Jaga — AI risk-guardian agent for Binance Agent OS (MCP).
 // Watches a subaccount through any Binance-compatible MCP server, enforces hard
-// risk rules deterministically (engine.mjs), streams a live dashboard, keeps an
-// audit trail, fires webhook alerts, and uses Claude to narrate incidents and
-// run periodic threat assessments. The LLM never decides trades.
+// risk rules deterministically (engine.mjs), streams a live dashboard, keeps a
+// hash-chained audit trail, fires webhook alerts, exposes itself as an MCP
+// server for other agents, and uses an LLM to narrate incidents and run
+// periodic threat assessments. The LLM never decides trades.
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 import { evaluate, freshState } from "./engine.mjs";
 import { startDashboard } from "./dashboard.mjs";
+import { toolResult, parseBalances, parsePrices, validateConfig } from "./shapes.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -20,6 +26,7 @@ const opt = (n, d) => {
 const CONFIG_PATH = opt("--config", "config.json");
 const STATE_PATH = opt("--state", "state.json");
 const AUDIT_PATH = opt("--audit", "audit.jsonl");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function loadJson(path, fallback) {
   try {
@@ -29,13 +36,28 @@ function loadJson(path, fallback) {
   }
 }
 
+// --- Audit trail: SHA-256 hash chain ---------------------------------------
+// Every entry commits to the previous one. Edit, delete or reorder a line and
+// `npm run audit:verify` pinpoints it.
+let lastHash = (() => {
+  try {
+    const lines = fs.readFileSync(AUDIT_PATH, "utf8").trim().split("\n");
+    return JSON.parse(lines.at(-1)).hash ?? "";
+  } catch {
+    return "";
+  }
+})();
 function audit(entry) {
-  fs.appendFileSync(AUDIT_PATH, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
+  const rec = { ts: new Date().toISOString(), ...entry, prev: lastHash };
+  rec.hash = createHash("sha256").update(JSON.stringify(rec)).digest("hex");
+  lastHash = rec.hash;
+  fs.appendFileSync(AUDIT_PATH, JSON.stringify(rec) + "\n");
+  return rec;
 }
 
 // --- MCP plumbing ----------------------------------------------------------
 async function connectMcp(cfg) {
-  const client = new Client({ name: "jaga", version: "2.0.0" });
+  const client = new Client({ name: "jaga", version: "2.1.0" });
   const transport = cfg.mcp.url
     ? new StreamableHTTPClientTransport(new URL(cfg.mcp.url), {
         // ponytail: bearer from env (e.g. token copied after OAuth in Claude Code /mcp); no OAuth dance in Jaga itself
@@ -46,28 +68,23 @@ async function connectMcp(cfg) {
   return client;
 }
 
-function parseToolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "{}";
-  return JSON.parse(text);
-}
-
 async function takeSnapshot(mcp, cfg) {
-  const account = parseToolJson(await mcp.callTool({ name: cfg.tools.account, arguments: {} }));
-  const prices = parseToolJson(await mcp.callTool({ name: cfg.tools.prices, arguments: {} }));
+  const a = cfg.tools.args ?? {};
+  const balances = parseBalances(toolResult(await mcp.callTool({ name: cfg.tools.account, arguments: a.account ?? {} })));
+  const prices = parsePrices(toolResult(await mcp.callTool({ name: cfg.tools.prices, arguments: a.prices ?? {} })));
   const quote = cfg.rules.quote;
-  const priceOf = (asset) => Number(prices[`${asset}${quote}`]) || 0;
+  const priceOf = (asset) => prices[`${asset}${quote}`] || 0;
   let quoteFree = 0;
   const positions = [];
-  for (const b of account.balances ?? []) {
-    const qty = Number(b.free);
-    if (qty <= 0) continue;
+  for (const b of balances) {
+    if (b.free <= 0) continue;
     if (b.asset === quote) {
-      quoteFree = qty;
+      quoteFree = b.free;
       continue;
     }
-    const price = Number(prices[`${b.asset}${quote}`]);
+    const price = priceOf(b.asset);
     if (!price) continue; // ponytail: assets without a direct quote pair are ignored
-    positions.push({ asset: b.asset, qty, price, usd: qty * price });
+    positions.push({ asset: b.asset, qty: b.free, price, usd: b.free * price });
   }
   const total = quoteFree + positions.reduce((s, p) => s + p.usd, 0);
   return { positions, quote, quoteFree, total, priceOf };
@@ -84,15 +101,17 @@ function damageAvoided(ledger, snapshot) {
   return usd;
 }
 
-// --- Alerts (Discord/Slack/Telegram-style webhook) -------------------------
+// --- Alerts (Discord / Slack-compatible webhook) ---------------------------
 async function alert(cfg, text) {
   if (!cfg.alerts?.webhook) return;
   try {
-    await fetch(cfg.alerts.webhook, {
+    const res = await fetch(cfg.alerts.webhook, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: text, text }), // content=Discord, text=Slack/generic
+      body: JSON.stringify({ content: text.slice(0, 1900), text }), // content=Discord, text=Slack/generic
+      signal: AbortSignal.timeout(10000),
     });
+    if (!res.ok) console.error(`alert failed: HTTP ${res.status}`);
   } catch (e) {
     console.error("alert failed:", e.message);
   }
@@ -121,6 +140,7 @@ async function askLLM(cfg, system, payload, maxTokens = 600) {
         { role: "user", content: JSON.stringify(payload) },
       ],
     }),
+    signal: AbortSignal.timeout(cfg.llm?.timeoutMs ?? 25000), // a hung LLM must never stall the guard loop
   });
   if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return (await res.json()).choices?.[0]?.message?.content ?? null;
@@ -158,22 +178,30 @@ async function threatAssessment(cfg, snapshot, state, rules) {
 // --- Execution & approvals -------------------------------------------------
 async function execute(ctx, a) {
   const { mcp, cfg, dash } = ctx;
-  const res = parseToolJson(
-    await mcp.callTool({
-      name: cfg.tools.order,
-      arguments: { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd },
-    })
-  );
+  let res;
+  try {
+    res = toolResult(
+      await mcp.callTool({
+        name: cfg.tools.order,
+        arguments: { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd },
+      })
+    );
+  } catch (e) {
+    console.error(`   ❌ ORDER FAILED ${a.side} ${a.symbol} ~$${a.usd}: ${e.message}`);
+    audit({ type: "action", ...a, status: "ERROR", error: e.message });
+    dash?.emit({ type: "violation", rule: "order-failed", text: `${a.side} ${a.symbol} ~$${a.usd}: ${e.message}` });
+    return;
+  }
   const status = res.status ?? "ok";
   if (status === "FILLED") {
     const asset = a.symbol.slice(0, -cfg.rules.quote.length);
     const qty = Number(res.executedQty) || 0;
-    const fillPrice = Number(res.fillPrice) || (qty ? a.usd / qty : 0);
+    const fillPrice = Number(res.fillPrice) || (qty ? Number(res.cummulativeQuoteQty ?? a.usd) / qty : 0);
     if (qty && fillPrice) ctx.ledger.push({ asset, qty, fillPrice });
     if (ctx.ledger.length > 200) ctx.ledger.shift(); // ponytail: rolling window, not forever
   }
   console.log(`   ✅ EXECUTED ${a.side} ${a.symbol} ~$${a.usd}: ${status}`);
-  audit({ type: "action", ...a, status });
+  audit({ type: "action", ...a, status, fillPrice: res.fillPrice, executedQty: res.executedQty, fee: res.fee });
   dash?.emit({ type: "action", rule: "executed", text: `${a.side} ${a.symbol} ~$${a.usd} → ${status}` });
 }
 
@@ -201,6 +229,50 @@ function persist(ctx) {
   fs.writeFileSync(STATE_PATH, JSON.stringify({ engine: ctx.state, ledger: ctx.ledger }, null, 2));
 }
 
+// --- Jaga as an MCP server -------------------------------------------------
+// Other agents (Claude Code, a trading agent, an ops bot) can ask the guardian
+// what it sees. Read-only by design: approvals stay with the human on the dashboard.
+function jagaMcpHandler(ctx) {
+  // structuredContent must be an object per MCP spec — arrays get wrapped
+  const json = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj) }], structuredContent: Array.isArray(obj) ? { items: obj } : obj });
+  return async (req, res) => {
+    const server = new McpServer({ name: "jaga", version: "2.1.0" });
+    server.tool("risk_status", "Current portfolio snapshot, drawdown, active rules, last violations, interventions and damage avoided", async () => {
+      const s = ctx.last;
+      return json({
+        mode: ctx.cfg.rules.mode,
+        rules: ctx.cfg.rules,
+        total: s?.total ?? null,
+        peak: ctx.state.peak,
+        drawdownPct: s && ctx.state.peak ? ((ctx.state.peak - s.total) / ctx.state.peak) * 100 : 0,
+        positions: s?.positions ?? [],
+        quoteFree: s?.quoteFree ?? 0,
+        lastViolations: ctx.lastViolations,
+        interventions: ctx.interventions,
+        damageAvoided: s ? damageAvoided(ctx.ledger, s) : 0,
+        lastTick: ctx.lastTickAt,
+      });
+    });
+    server.tool("pending_proposals", "Orders proposed by the risk engine and awaiting human approval (propose mode)", async () =>
+      json([...ctx.pending.entries()].map(([id, a]) => ({ id, ...a })))
+    );
+    server.tool("audit_tail", "Last N entries of the hash-chained audit trail", { n: z.number().int().min(1).max(200).default(20) }, async ({ n }) => {
+      let lines = [];
+      try {
+        lines = fs.readFileSync(AUDIT_PATH, "utf8").trim().split("\n").slice(-n).map((l) => JSON.parse(l));
+      } catch {}
+      return json(lines);
+    });
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); // stateless: one server per request
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
+  };
+}
+
 // --- Main loop -------------------------------------------------------------
 async function tick(ctx) {
   const { mcp, cfg, dash } = ctx;
@@ -208,10 +280,13 @@ async function tick(ctx) {
   const { violations, actions, state } = evaluate(snapshot, cfg.rules, ctx.state);
   ctx.state = state;
   ctx.ticks++;
+  ctx.last = snapshot;
+  ctx.lastViolations = violations;
+  ctx.lastTickAt = new Date().toISOString();
   const avoided = damageAvoided(ctx.ledger, snapshot);
 
   console.log(
-    `[${new Date().toISOString()}] total=${snapshot.total.toFixed(2)} ${cfg.rules.quote} | avoided=${avoided.toFixed(2)} | ` +
+    `[${ctx.lastTickAt}] total=${snapshot.total.toFixed(2)} ${cfg.rules.quote} | avoided=${avoided.toFixed(2)} | ` +
       snapshot.positions.map((p) => `${p.asset}=${p.usd.toFixed(2)}`).join(" ")
   );
   audit({ type: "tick", total: snapshot.total, avoided, positions: snapshot.positions });
@@ -224,6 +299,7 @@ async function tick(ctx) {
     quoteFree: snapshot.quoteFree,
     positions: snapshot.positions,
     mode: cfg.rules.mode,
+    limits: { maxDrawdownPct: cfg.rules.maxDrawdownPct, maxPositionPct: cfg.rules.maxPositionPct },
   });
 
   if (violations.length) {
@@ -234,21 +310,25 @@ async function tick(ctx) {
       dash?.emit({ type: "violation", rule: v.rule, text: v.detail });
     }
     for (const a of actions) {
-      if (cfg.rules.mode === "execute") await execute(ctx, a);
-      else propose(ctx, a);
+      if (cfg.rules.mode === "execute") {
+        await execute(ctx, a);
+        ctx.interventions++;
+      } else propose(ctx, a);
     }
-    const report = await narrate(cfg, snapshot, violations, actions, cfg.rules.mode);
-    console.log("\n🧠 Jaga report:\n" + report + "\n");
-    audit({ type: "report", report });
-    dash?.emit({ type: "report", rule: "🧠 report", text: report });
-    await alert(cfg, `🛡️ Jaga intervention\n${report}`);
+    // narration runs off the critical path: the next tick never waits for an LLM
+    void narrate(cfg, snapshot, violations, actions, cfg.rules.mode).then(async (report) => {
+      console.log("\n🧠 Jaga report:\n" + report + "\n");
+      audit({ type: "report", report });
+      dash?.emit({ type: "report", rule: "🧠 report", text: report });
+      await alert(cfg, `🛡️ Jaga intervention\n${report}`);
+    });
   } else if (cfg.advisor?.everyTicks && ctx.ticks % cfg.advisor.everyTicks === 0) {
-    const assessment = await threatAssessment(cfg, snapshot, state, cfg.rules);
-    if (assessment) {
+    void threatAssessment(cfg, snapshot, state, cfg.rules).then((assessment) => {
+      if (!assessment) return;
       console.log("🔭 threat assessment:\n" + assessment + "\n");
       audit({ type: "advisor", assessment });
       dash?.emit({ type: "advisor", rule: "🔭 advisor", text: assessment });
-    }
+    });
   }
 
   persist(ctx);
@@ -260,6 +340,11 @@ async function main() {
     console.error(`Missing ${CONFIG_PATH}. Copy config.demo.json or config.binance.example.json.`);
     process.exit(1);
   }
+  const errs = validateConfig(cfg);
+  if (errs.length) {
+    console.error("❌ invalid config:\n  " + errs.join("\n  "));
+    process.exit(1);
+  }
   const persisted = loadJson(STATE_PATH, {});
   const ctx = {
     cfg,
@@ -267,31 +352,51 @@ async function main() {
     ledger: persisted.ledger ?? [],
     pending: new Map(),
     ticks: 0,
+    interventions: 0,
+    last: null,
+    lastViolations: [],
+    lastTickAt: null,
     dash: null,
     mcp: null,
   };
   ctx.dash = cfg.dashboard?.port
-    ? startDashboard(cfg.dashboard.port, (id, approve) => onDecision(ctx, id, approve))
+    ? startDashboard(cfg.dashboard.port, (id, approve) => onDecision(ctx, id, approve), jagaMcpHandler(ctx))
     : null;
   console.log(`Jaga 🛡️  guarding via MCP (${cfg.mcp.url ?? cfg.mcp.command}) — mode=${cfg.rules.mode}`);
   ctx.mcp = await connectMcp(cfg);
   if (flag("--list-tools")) {
     // discover real tool names + schemas so config.tools can be mapped without guessing
-    for (const t of (await ctx.mcp.listTools()).tools) console.log(`
-## ${t.name}
-${t.description ?? ""}
-${JSON.stringify(t.inputSchema)}`);
+    for (const t of (await ctx.mcp.listTools()).tools) console.log(`\n## ${t.name}\n${t.description ?? ""}\n${JSON.stringify(t.inputSchema)}`);
     process.exit(0);
   }
   await tick(ctx);
   if (flag("--once")) process.exit(0);
-  setInterval(async () => {
+
+  // sequential loop: a slow tick (network, MCP) can never overlap the next one
+  // and double-execute a sell. Three failures in a row → reconnect the MCP client.
+  let failures = 0;
+  for (;;) {
+    await sleep((cfg.intervalSec ?? 10) * 1000);
     try {
       await tick(ctx);
+      failures = 0;
     } catch (e) {
       console.error("tick failed:", e.message);
+      audit({ type: "error", error: e.message });
+      if (++failures >= 3) {
+        console.error("↻ reconnecting MCP…");
+        try {
+          await ctx.mcp.close();
+        } catch {}
+        try {
+          ctx.mcp = await connectMcp(cfg);
+          failures = 0;
+        } catch (e2) {
+          console.error("reconnect failed:", e2.message);
+        }
+      }
     }
-  }, (cfg.intervalSec ?? 10) * 1000);
+  }
 }
 
 main().catch((e) => {

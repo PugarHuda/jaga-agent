@@ -33,7 +33,7 @@ const PAGE = /* html */ `<!doctype html>
   .up{color:var(--green)} .down{color:var(--red)}
   h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
 </style></head><body>
-<h1>Jaga 🛡️ <span style="color:var(--green)">●</span> live</h1>
+<h1>Jaga 🛡️ <span id="dot" style="color:var(--green)">●</span> live</h1>
 <div class="sub">deterministic risk guardian · Binance Agent OS (MCP) · code enforces, AI explains</div>
 <div class="grid">
   <div class="card"><div class="k">Portfolio</div><div class="v" id="total">—</div></div>
@@ -99,7 +99,7 @@ function tick(ev){
   $("total").textContent=fmt(ev.total)+" "+ev.quote;
   $("peak").textContent=fmt(ev.peak)+" "+ev.quote;
   const dd=ev.peak?((ev.peak-ev.total)/ev.peak*100):0;
-  $("dd").textContent=dd.toFixed(1)+"%";$("dd").className="v "+(dd>5?"down":"up");
+  const ddLim=ev.limits?.maxDrawdownPct;$("dd").textContent=dd.toFixed(1)+"%"+(ddLim?" / "+ddLim+"%":"");$("dd").className="v "+(ddLim&&dd>=ddLim*0.6?"down":"up");
   $("mode").textContent=ev.mode;
   if(ev.avoided!==undefined){
     $("saved").textContent=(ev.avoided>=0?"+":"")+fmt(ev.avoided)+" "+ev.quote;
@@ -108,16 +108,18 @@ function tick(ev){
   const tbl=$("pos");tbl.textContent="";
   const tr=(cells,th)=>{const r=document.createElement("tr");
     for(const c of cells){const e=document.createElement(th?"th":"td");e.textContent=c;r.append(e)}
-    tbl.append(r)};
+    tbl.append(r);return r};
   tr(["Asset","Qty","Price","Value","% Port"],true);
-  for(const p of ev.positions)tr([p.asset,p.qty.toFixed(6),fmt(p.price),fmt(p.usd),(p.usd/ev.total*100).toFixed(1)+"%"]);
+  const cap=ev.limits?.maxPositionPct;
+  for(const p of ev.positions){const pct=p.usd/ev.total*100;const r=tr([p.asset,p.qty.toFixed(6),fmt(p.price),fmt(p.usd),pct.toFixed(1)+"%"+(cap?" / "+cap+"%":"")]);if(cap&&pct>cap)r.lastChild.className="down"}
   tr([ev.quote,"","",fmt(ev.quoteFree),(ev.quoteFree/ev.total*100).toFixed(1)+"%"]);
 }
 // server injects current state at serve time — first paint is already live
 const BOOT=__BOOT__;
 series=BOOT.series;acts=BOOT.actions;$("acts").textContent=acts;draw();
 BOOT.events.forEach(feed);BOOT.pending.forEach(renderPending);if(BOOT.lastTick)tick(BOOT.lastTick);
-new EventSource("/events").onmessage=m=>{
+const es=new EventSource("/events");es.onopen=()=>$("dot").style.color="var(--green)";es.onerror=()=>$("dot").style.color="var(--dim)";
+es.onmessage=m=>{
   const ev=JSON.parse(m.data);
   if(ev.type==="tick")return tick(ev);
   if(ev.type==="decision")return removePending(ev.id);
@@ -127,7 +129,7 @@ new EventSource("/events").onmessage=m=>{
 };
 </script></body></html>`;
 
-export function startDashboard(port, onDecision) {
+export function startDashboard(port, onDecision, mcpHandler) {
   const clients = new Set();
   const store = { series: [], events: [], actions: 0, lastTick: null, pending: [] };
   const broadcast = (ev) => {
@@ -163,6 +165,12 @@ export function startDashboard(port, onDecision) {
         } catch {
           res.writeHead(400).end();
         }
+      });
+    } else if (req.url === "/mcp" && mcpHandler) {
+      // Jaga as an MCP server (read-only tools) — same loopback-only port
+      mcpHandler(req, res).catch((e) => {
+        console.error("mcp handler failed:", e.message);
+        if (!res.headersSent) res.writeHead(500).end();
       });
     } else if (req.url === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });

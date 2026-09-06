@@ -7,3 +7,4 @@ demo.log
 .playwright-mcp/
 paper.log
 *.mp4
+rogue-llm.log

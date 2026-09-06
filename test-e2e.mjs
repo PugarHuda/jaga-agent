@@ -86,6 +86,9 @@ try {
   ok((await page.locator("#dd").textContent()).includes("/ " + cfg.rules.maxDrawdownPct + "%"), "drawdown card shows the configured limit");
   await page.waitForFunction(() => [...document.querySelectorAll("#pos td:nth-child(4)")].some((td) => /%$/.test(td.textContent)), null, { timeout: 10000 });
   ok(true, "positions show unrealized PnL vs cost basis");
+  await page.waitForFunction(() => document.querySelectorAll("#hr tr").length > 3, null, { timeout: 10000 });
+  ok((await page.locator("#hr").textContent()).includes("max-drawdown") && (await page.locator("#hr").textContent()).includes("/ " + cfg.rules.maxDrawdownPct + "%"), "rule headroom panel lists every configured rule with its limit");
+  ok((await page.locator("#feed").getAttribute("aria-live")) === "polite", "incident feed is a live region for screen readers");
 
   // the rogue agent concentrates ETH → engine proposes a trim → dashboard shows Approve/Reject
   const approve = page.getByRole("button", { name: "✅ Approve" }).first();
@@ -103,6 +106,23 @@ try {
   await page.waitForFunction((id) => !document.querySelector('#pending [data-id="' + id + '"]'), approvedId, { timeout: 5000 });
   ok(true, "the approved proposal's card is removed (a fresh breach may already be pending — the rogue never sleeps)");
   ok(Number(await page.locator("#acts").textContent()) >= 1, "interventions counter incremented");
+
+  // race: two tabs approve the same proposal at once → exactly one execution
+  const tab2 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await tab2.goto(`http://localhost:${PORT}`);
+  const raceBtn = page.getByRole("button", { name: "✅ Approve" }).first();
+  await raceBtn.waitFor({ state: "visible", timeout: 60000 });
+  const raceId = await raceBtn.evaluate((b) => b.closest("[data-id]").dataset.id);
+  await tab2.waitForFunction((id) => document.querySelector('#pending [data-id="' + id + '"] button'), raceId, { timeout: 10000 });
+  const executedBeforeRace = (out.match(/EXECUTED/g) || []).length;
+  await Promise.all([
+    page.evaluate((id) => document.querySelector('#pending [data-id="' + id + '"] button').click(), raceId),
+    tab2.evaluate((id) => document.querySelector('#pending [data-id="' + id + '"] button').click(), raceId),
+  ]);
+  await new Promise((r) => setTimeout(r, 2500));
+  const decisions = fs.readFileSync(auditPath, "utf8").split("\n").filter((l) => l.includes('"type":"decision"') && l.includes(raceId)).length;
+  ok(decisions === 1 && (out.match(/EXECUTED/g) || []).length === executedBeforeRace + 1, "double approval from two tabs executes exactly once");
+  await tab2.close();
 
   // next proposal → reject → recorded, nothing executed for it
   const reject = page.getByRole("button", { name: "❌ Reject" }).first();
@@ -134,7 +154,7 @@ try {
 
   // Prometheus metrics reflect live state
   const metrics = await page.evaluate(() => fetch("/metrics").then((r) => r.text()));
-  ok(/^jaga_portfolio_total \d/m.test(metrics) && /jaga_interventions_total 1\b/.test(metrics), "/metrics exposes portfolio + intervention counters");
+  ok(/^jaga_portfolio_total \d/m.test(metrics) && Number(metrics.match(/jaga_interventions_total (\d+)/)?.[1]) === (out.match(/EXECUTED/g) || []).length, "/metrics exposes portfolio + an intervention counter that matches the log");
 
   // hot reload: tighten the concentration cap on disk → dashboard shows the new limit, feed logs it
   cfg.rules.maxPositionPct = 30;
@@ -163,6 +183,8 @@ try {
   }
   ok(/PANIC: human-triggered/.test(out) && (out.match(/EXECUTED/g) || []).length > executedBeforePanic, "panic liquidated positions through MCP");
   ok(panicEntry && panicSells.length >= panicEntry.positions.length, `audit shows one FILLED full sell per panic target (${panicSells.length}/${panicEntry?.positions.length})`);
+  for (let i = 0; i < 50 && !alerts.some((a) => /PANIC/.test(a.content)); i++) await new Promise((r) => setTimeout(r, 200));
+  ok(alerts.some((a) => /PANIC/.test(a.content)), "panic fires a webhook alert too");
   ok((await page.locator("#pending .ev").count()) === 0 && (await page.evaluate(() => fetch("/state").then((r) => r.json()))).pending.length === 0, "panic clears stale proposals from the dashboard and its boot state");
 
   // the guardian is itself an MCP server other agents can query

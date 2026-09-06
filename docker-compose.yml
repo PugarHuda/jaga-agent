@@ -6,3 +6,9 @@ services:
       JAGA_DASHBOARD_TOKEN: ${JAGA_DASHBOARD_TOKEN:-change-me-please-16}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     # command: ["npm", "run", "demo"]   # real Aug-2024 crash replay instead of live paper mode
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    ports: ["9090:9090"]
+    volumes: ["./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    depends_on: [jaga]

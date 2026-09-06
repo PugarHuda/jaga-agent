@@ -222,6 +222,7 @@ async function panic(ctx) {
   console.log(`🚨 PANIC: human-triggered de-risk of ${targets.length} position(s)`);
   audit({ type: "panic", positions: targets.map((p) => p.asset) });
   ctx.dash?.emit({ type: "violation", rule: "🚨 panic", text: `human-triggered de-risk: selling ${targets.map((p) => p.asset).join(", ") || "nothing (already in quote)"}` });
+  void alert(ctx.cfg, `🚨 Jaga PANIC: human-triggered de-risk of ${targets.map((p) => p.asset).join(", ") || "nothing"}`);
   for (const p of targets) await execute(ctx, { side: "SELL", symbol: `${p.asset}${s.quote}`, usd: Math.round(p.usd * 100) / 100, full: true, qty: p.qty });
   for (const id of ctx.pending.keys()) ctx.dash?.emit({ type: "decision", id }); // proposals are moot now — clear the dashboard too
   ctx.pending.clear();
@@ -294,6 +295,7 @@ function watchConfig(ctx) {
         if (errs.length) {
           console.error("⚠️  config change rejected:\n  " + errs.join("\n  "));
           ctx.dash?.emit({ type: "violation", rule: "config-rejected", text: errs.join("; ") });
+          void alert(ctx.cfg, `⚠️ Jaga config change rejected: ${errs.join("; ")}`);
           return;
         }
         const before = JSON.stringify(ctx.cfg.rules);
@@ -354,6 +356,7 @@ function jagaMcpHandler(ctx) {
         unpriced: s?.unpriced ?? [],
         quoteFree: s?.quoteFree ?? 0,
         lastViolations: ctx.lastViolations,
+        headroom: ctx.headroom,
         interventions: ctx.interventions,
         damageAvoided: s ? damageAvoided(ctx.ledger, s) : 0,
         lastTick: ctx.lastTickAt,
@@ -409,8 +412,9 @@ async function tick(ctx) {
   const { mcp, cfg, dash } = ctx;
   const snapshot = await takeSnapshot(mcp, cfg);
   snapshot.ts = Date.now();
-  const { violations, actions, state } = evaluate(snapshot, cfg.rules, ctx.state);
+  const { violations, actions, state, headroom } = evaluate(snapshot, cfg.rules, ctx.state);
   ctx.state = state;
+  ctx.headroom = headroom;
   ctx.ticks++;
   ctx.last = snapshot;
   ctx.lastViolations = violations;
@@ -431,6 +435,7 @@ async function tick(ctx) {
     quoteFree: snapshot.quoteFree,
     positions: snapshot.positions.map((p) => ({ ...p, entry: state.entries[p.asset]?.entry ?? null })),
     unpriced: snapshot.unpriced,
+    headroom: [...headroom.filter((h) => h.asset === "*"), ...headroom.filter((h) => h.asset !== "*").slice(0, 8)].sort((x, y) => y.pct - x.pct), // portfolio gauges always, hottest per-asset ones
     mode: cfg.rules.mode,
     limits: { maxDrawdownPct: cfg.rules.maxDrawdownPct, maxPositionPct: cfg.rules.maxPositionPct },
   });
@@ -488,6 +493,7 @@ async function main() {
     errors: 0,
     steps: {},
     inflight: null,
+    headroom: [],
     last: null,
     lastViolations: [],
     lastTickAt: null,
@@ -548,6 +554,8 @@ async function main() {
       audit({ type: "error", error: e.message });
       if (++failures >= 3) {
         console.error("↻ reconnecting MCP…");
+        ctx.dash?.emit({ type: "violation", rule: "mcp-down", text: `3 consecutive tick failures (${e.message}) — reconnecting` });
+        void alert(cfg, `🔌 Jaga lost its MCP feed (${e.message}) — reconnecting. The guard is BLIND until this recovers.`);
         try {
           await ctx.mcp.close();
         } catch {}

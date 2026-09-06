@@ -12,7 +12,10 @@
 //           entry is a running cost basis: when the position grows, the new lot is
 //           averaged in at its price; trims keep the basis.
 //
-// Returns { violations, actions, state }. Actions are SELL-to-quote orders only —
+// Returns { violations, actions, state, headroom }. headroom = every rule's current
+// reading vs its limit (pct = how close to tripping), sorted hottest first — the
+// deterministic answer to "what's closest to tripping", no LLM needed.
+// Actions are SELL-to-quote orders only —
 // Jaga never buys, never withdraws, never widens exposure.
 
 export function freshState() {
@@ -52,6 +55,10 @@ export function evaluate(snapshot, rules, state) {
     flow,
   };
   const violations = [];
+  const headroom = [];
+  const gauge = (rule, asset, value, limit) => {
+    if (limit) headroom.push({ rule, asset, value: Math.round(value * 100) / 100, limit, pct: Math.round(Math.max(0, (value / limit) * 100)) });
+  };
   const sells = {}; // asset -> { usd, full, qty }
   const window = rules.volatility?.window ?? 5;
   const qtyOf = Object.fromEntries(snapshot.positions.map((p) => [p.asset, p.qty]));
@@ -79,6 +86,10 @@ export function evaluate(snapshot, rules, state) {
     const { entry, high } = s.entries[p.asset];
     const fromEntryPct = ((p.price - entry) / entry) * 100;
     const fromHighPct = ((high - p.price) / high) * 100;
+    gauge("stop-loss", p.asset, -fromEntryPct, R.stopLossPct);
+    if (R.trailingStopPct && high > entry) gauge("trailing-stop", p.asset, fromHighPct, R.trailingStopPct);
+    gauge("take-profit", p.asset, fromEntryPct, R.takeProfitPct);
+    gauge("max-position", p.asset, (p.usd / snapshot.total) * 100, R.maxPositionPct);
 
     // 1. hard stop-loss from entry
     if (-fromEntryPct >= R.stopLossPct) {
@@ -130,6 +141,7 @@ export function evaluate(snapshot, rules, state) {
     // 5. volatility circuit breaker: flash-crash inside the rolling window
     if (R.volatility && hist.length >= 2) {
       const windowDropPct = ((hist[0] - p.price) / hist[0]) * 100;
+      gauge("circuit-breaker", p.asset, windowDropPct, R.volatility.dropPct);
       if (windowDropPct >= R.volatility.dropPct) {
         violations.push({
           rule: "circuit-breaker",
@@ -156,6 +168,7 @@ export function evaluate(snapshot, rules, state) {
   // 6a. total exposure cap: too much of the book in non-quote assets → trim each position pro-rata
   const exposure = exposureNow;
   const exposurePct = snapshot.total > 0 ? (exposure / snapshot.total) * 100 : 0;
+  gauge("max-exposure", "*", exposurePct, rules.maxExposurePct);
   if (rules.maxExposurePct && exposurePct > rules.maxExposurePct) {
     const excess = exposure - (snapshot.total * rules.maxExposurePct) / 100;
     if (excess >= rules.minTradeUsd) {
@@ -172,6 +185,7 @@ export function evaluate(snapshot, rules, state) {
   // 6b. daily loss limit: down N% since the start of the UTC day → de-risk everything (prop-desk rule)
   const sellable = snapshot.positions.some((p) => p.usd >= rules.minTradeUsd);
   const dayLossPct = s.day.start > 0 ? ((s.day.start - snapshot.total) / s.day.start) * 100 : 0;
+  gauge("daily-loss", "*", dayLossPct, rules.maxDailyLossPct);
   if (rules.maxDailyLossPct && dayLossPct >= rules.maxDailyLossPct && sellable) {
     violations.push({
       rule: "daily-loss",
@@ -186,6 +200,7 @@ export function evaluate(snapshot, rules, state) {
   // only fires while there's something left to sell — once we're fully in quote,
   // repeating "still down from peak" every tick is noise, not protection
   const ddPct = s.peak > 0 ? ((s.peak - snapshot.total) / s.peak) * 100 : 0;
+  gauge("max-drawdown", "*", ddPct, rules.maxDrawdownPct);
   if (ddPct >= rules.maxDrawdownPct && sellable) {
     violations.push({
       rule: "max-drawdown",
@@ -214,5 +229,6 @@ export function evaluate(snapshot, rules, state) {
     delete s.history[asset];
   }
 
-  return { violations, actions, state: s };
+  headroom.sort((a, b) => b.pct - a.pct);
+  return { violations, actions, state: s, headroom };
 }

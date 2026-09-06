@@ -26,7 +26,8 @@ const REPLAY_TICK_MS = Number(opt("--tick", 3)) * 1000; // real seconds between 
 const REST = "https://data-api.binance.vision";
 const WS = "wss://data-stream.binance.vision/stream?streams=";
 const QUOTE = "USDC";
-const SYMBOLS = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "USDCUSDT"]; // USDCUSDT: lets a USDT balance be valued through a bridge
+// --symbols BTCUSDC,ETHUSDC,… overrides; USDCUSDT is always included so a USDT balance can be valued through a bridge
+const SYMBOLS = [...new Set([...opt("--symbols", "BTCUSDC,ETHUSDC,BNBUSDC,SOLUSDC").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean), "USDCUSDT"])];
 const TAKER_FEE = 0.001; // Binance spot default tier, 0.1%
 
 const account = {

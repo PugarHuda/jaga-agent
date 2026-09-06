@@ -1,0 +1,8 @@
+# Scrapes Jaga's /metrics through the dashboard token.
+#   docker compose --profile monitoring up -d   →   Prometheus at http://localhost:9090
+global: { scrape_interval: 5s }
+scrape_configs:
+  - job_name: jaga
+    metrics_path: /metrics
+    authorization: { type: Bearer, credentials: change-me-please-16 }
+    static_configs: [{ targets: ["jaga:7777"] }]

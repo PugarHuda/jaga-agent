@@ -1,5 +1,6 @@
 // Jaga live dashboard — zero-dependency HTTP + SSE. One page, dark, judge-friendly.
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 
 const PAGE = /* html */ `<!doctype html>
 <html><head><meta charset="utf-8"><title>Jaga 🛡️ — live guard</title>
@@ -56,7 +57,8 @@ const PAGE = /* html */ `<!doctype html>
   <div class="card"><h2>Equity curve</h2><canvas id="chart" width="800" height="180"></canvas>
     <h2>Positions</h2><div style="overflow-x:auto"><table id="pos"><tr><th>Asset</th><th>Qty</th><th>Price</th><th>vs entry</th><th>Value</th><th>% Port</th></tr></table></div>
   </div>
-  <div class="card"><h2>Incident feed</h2><div id="feed"></div></div>
+  <div class="card"><h2>Rule headroom</h2><table id="hr"><tr><th>Rule</th><th>Asset</th><th>Reading / limit</th><th style="width:38%">Closeness</th></tr></table>
+    <h2>Incident feed</h2><div id="feed" role="log" aria-live="polite" aria-relevant="additions"></div></div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -112,6 +114,12 @@ function tick(ev){
     $("saved").textContent=(ev.avoided>=0?"+":"")+fmt(ev.avoided)+" "+ev.quote;
     $("saved").className="v "+(ev.avoided>=0?"up":"down");
   }
+  const h=$("hr");h.textContent="";
+  const hrow=(cells,th)=>{const r=document.createElement("tr");for(const c of cells){const e=document.createElement(th?"th":"td");if(c instanceof Node)e.append(c);else e.textContent=c;r.append(e)}h.append(r);return r};
+  hrow(["Rule","Asset","Reading / limit","Closeness"],true);
+  for(const g of ev.headroom??[]){const bar=document.createElement("div");bar.style.cssText="height:8px;border-radius:4px;background:#1e293b;overflow:hidden";
+    const fill=document.createElement("div");fill.style.cssText="height:100%;width:"+Math.min(100,g.pct)+"%;background:"+(g.pct>=90?"var(--red)":g.pct>=60?"var(--amber)":"var(--green)");bar.append(fill);
+    const r=hrow([g.rule,g.asset,g.value.toFixed(2)+"% / "+g.limit+"%",bar]);r.lastChild.title=g.pct+"%";if(g.pct>=90)r.children[0].className="down"}
   const tbl=$("pos");tbl.textContent="";
   const tr=(cells,th)=>{const r=document.createElement("tr");
     for(const c of cells){const e=document.createElement(th?"th":"td");e.textContent=c;r.append(e)}
@@ -157,7 +165,8 @@ export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp
     if (!token) return true;
     const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     const cookie = (req.headers.cookie ?? "").split(";").map((c) => c.trim()).find((c) => c.startsWith("jaga="))?.slice(5);
-    return bearer === token || cookie === token;
+    const same = (a) => typeof a === "string" && a.length === token.length && timingSafeEqual(Buffer.from(a), Buffer.from(token));
+    return same(bearer) || same(cookie);
   };
   // CSRF guard for state-changing POSTs: browsers always send Origin on cross-site
   // POSTs — reject any origin that isn't this dashboard itself (curl/local tools send

@@ -152,4 +152,15 @@ ok(r.state.entries.SOL.entry === 80 && !r.violations.some((v) => v.rule === "sto
 r = evaluate({ ...snap([], 920), unpriced: [{ asset: "SOL", qty: 1, price: 80, usd: 80 }] }, rules, r.state);
 ok(r.state.entries.SOL, "an asset that is merely unpriced this tick keeps its entry");
 
+// 18. Headroom: every rule reports its reading vs limit, hottest first, before anything trips
+st = { ...freshState(), entries: { ETH: { entry: 4000, high: 4200, qty: 0.1 } } };
+r = evaluate(snap([pos("ETH", 4040, 404)], 596.8), rules, { ...st, peak: 1020, day: { date: new Date().toISOString().slice(0, 10), start: 1010 } }); // -3.8% from high, +1% from entry, 40.4% of book
+ok(r.violations.length === 0 || r.violations.every((v) => v.rule === "max-position"), "scenario stays below the hard limits");
+const hr = Object.fromEntries(r.headroom.map((h) => [h.rule + ":" + h.asset, h]));
+ok(hr["trailing-stop:ETH"] && hr["trailing-stop:ETH"].pct === 95, "trailing stop reads 3.8/4 → 95% (about to trip)");
+ok(hr["stop-loss:ETH"].pct === 0 && hr["take-profit:ETH"].pct === 10, "stop-loss 0% (in profit), take-profit 10% of the way");
+ok(hr["max-drawdown:*"].limit === 10 && Math.abs(hr["max-drawdown:*"].value - 1.88) < 0.01, "portfolio drawdown gauge: 1.88% of 10%");
+ok(hr["daily-loss:*"] === undefined, "rules that aren't configured have no gauge");
+ok(r.headroom[0].rule === "trailing-stop" || r.headroom[0].rule === "max-position", "hottest rule sorts first");
+
 console.log(`✅ all ${checks} risk-engine checks passed`);

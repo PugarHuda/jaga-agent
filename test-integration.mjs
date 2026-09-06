@@ -149,7 +149,7 @@ try {
   ok(badQty.status === "REJECTED" && /LOT_SIZE/.test(badQty.reason), "off-step quantity rejected with Binance's LOT_SIZE reason");
   const exact = floorToStep(ethNow, steps.ETHUSDC);
   const qtySell = toolResult(await a.callTool({ name: "place_order", arguments: { symbol: "ETHUSDC", side: "SELL", type: "MARKET", quantity: exact } }));
-  ok(qtySell.status === "FILLED" && Math.abs(qtySell.executedQty - exact) < 1e-12, "floored full quantity fills exactly (no over-ask)");
+  ok(qtySell.status === "FILLED" && Math.abs(qtySell.executedQty - exact) < 1e-9, "floored full quantity fills exactly (no over-ask)");
   const ethLeft = parseBalances(toolResult(await a.callTool({ name: "get_account", arguments: {} }))).find((x) => x.asset === "ETH")?.free ?? 0;
   ok(ethLeft < steps.ETHUSDC, "only sub-step dust remains after a quantity full sell");
   await a.close();

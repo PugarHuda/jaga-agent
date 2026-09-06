@@ -90,20 +90,22 @@ async function refreshIfStale() {
 }
 
 // walk the real book: a market order eats levels until the quote amount is spent
-async function fillFromBook(symbol, side, quoteQty) {
+async function fillFromBook(symbol, side, { quote = Infinity, base = Infinity }) {
   const book = await get(`/api/v3/depth?symbol=${symbol}&limit=100`);
   const levels = side === "BUY" ? book.asks : book.bids;
-  let remaining = quoteQty,
+  let remQ = quote,
+    remB = base,
     qty = 0,
     cost = 0;
   for (const [p, q] of levels) {
     const price = Number(p),
       avail = Number(q);
-    const take = Math.min(avail, remaining / price);
+    const take = Math.min(avail, remQ / price, remB);
     qty += take;
     cost += take * price;
-    remaining -= take * price;
-    if (remaining <= 1e-9) break;
+    remQ -= take * price;
+    remB -= take;
+    if (remQ <= 1e-9 || remB <= 1e-12) break;
   }
   if (qty <= 0) throw new Error("empty book");
   return { qty, cost, avgPrice: cost / qty, levels: levels.length, top: Number(levels[0][0]) };
@@ -132,7 +134,7 @@ async function placeOrder({ symbol, side, quoteOrderQty, quantity }) {
     a = bal(asset);
   if (side === "BUY") {
     if (usdc.free < quoteOrderQty) return { status: "REJECTED", reason: "insufficient USDC" };
-    const f = await fillFromBook(symbol, "BUY", quoteOrderQty);
+    const f = await fillFromBook(symbol, "BUY", quantity !== undefined ? { base: quantity } : { quote: quoteOrderQty });
     const fee = f.qty * TAKER_FEE;
     usdc.free -= f.cost;
     a.free += f.qty - fee;
@@ -144,8 +146,8 @@ async function placeOrder({ symbol, side, quoteOrderQty, quantity }) {
     const want = quantity !== undefined ? quantity : Math.min(a.free, quoteOrderQty / prices[symbol]);
     if (quantity !== undefined && quantity > a.free + 1e-12) return { status: "REJECTED", reason: `insufficient ${asset} (have ${a.free})` };
     if (want <= 0) return { status: "REJECTED", reason: `no ${asset} to sell` };
-    const f = await fillFromBook(symbol, "SELL", want * prices[symbol]);
-    const qty = Math.min(want, f.qty);
+    const f = await fillFromBook(symbol, "SELL", { base: want });
+    const qty = f.qty; // exactly what was asked (book is 100 levels deep; paper sizes never exhaust it)
     const proceeds = qty * f.avgPrice;
     const fee = proceeds * TAKER_FEE;
     a.free -= qty;

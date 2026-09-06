@@ -2,8 +2,11 @@
 //
 // snapshot: { positions: [{asset, qty, price, usd}], quote, quoteFree, total }
 // rules:    { quote, stopLossPct, trailingStopPct?, takeProfitPct?, maxPositionPct,
-//             maxDrawdownPct, minTradeUsd, volatility?: {window, dropPct}, mode }
-// state:    { peak, entries: {ASSET: {entry, high}}, history: {ASSET: [price,...]} }
+//             maxDrawdownPct, minTradeUsd, volatility?: {window, dropPct}, mode,
+//             assets?: { BTC: { stopLossPct: 10, ... } }   ← per-asset overrides }
+// state:    { peak, entries: {ASSET: {entry, high, qty}}, history: {ASSET: [price,...]} }
+//           entry is a running cost basis: when the position grows, the new lot is
+//           averaged in at its price; trims keep the basis.
 //
 // Returns { violations, actions, state }. Actions are SELL-to-quote orders only —
 // Jaga never buys, never withdraws, never widens exposure.
@@ -28,11 +31,17 @@ export function evaluate(snapshot, rules, state) {
   };
 
   for (const p of snapshot.positions) {
-    if (p.usd < rules.minTradeUsd) continue; // dust — not worth guarding or spamming about
+    const R = rules.assets?.[p.asset] ? { ...rules, ...rules.assets[p.asset] } : rules; // per-asset overrides
+    if (p.usd < R.minTradeUsd) continue; // dust — not worth guarding or spamming about
 
-    // book-keeping: entry on first sight, high-water mark, rolling price window
-    if (!s.entries[p.asset]) s.entries[p.asset] = { entry: p.price, high: p.price };
-    else s.entries[p.asset] = { ...s.entries[p.asset], high: Math.max(s.entries[p.asset].high, p.price) };
+    // book-keeping: cost-basis entry, high-water mark, rolling price window
+    const prev = s.entries[p.asset];
+    if (!prev) s.entries[p.asset] = { entry: p.price, high: p.price, qty: p.qty };
+    else {
+      const grew = prev.qty > 0 && p.qty > prev.qty * 1.005; // new lot bought (by anyone) → average it in
+      const entry = grew ? (prev.entry * prev.qty + p.price * (p.qty - prev.qty)) / p.qty : prev.entry;
+      s.entries[p.asset] = { entry, high: Math.max(prev.high, p.price, grew ? entry : 0), qty: p.qty };
+    }
     const hist = [...(s.history[p.asset] ?? []), p.price].slice(-window);
     s.history[p.asset] = hist;
 
@@ -41,61 +50,61 @@ export function evaluate(snapshot, rules, state) {
     const fromHighPct = ((high - p.price) / high) * 100;
 
     // 1. hard stop-loss from entry
-    if (-fromEntryPct >= rules.stopLossPct) {
+    if (-fromEntryPct >= R.stopLossPct) {
       violations.push({
         rule: "stop-loss",
         asset: p.asset,
         severity: "high",
-        detail: `${p.asset} down ${(-fromEntryPct).toFixed(1)}% from entry ${entry.toFixed(2)} (limit ${rules.stopLossPct}%)`,
+        detail: `${p.asset} down ${(-fromEntryPct).toFixed(1)}% from entry ${entry.toFixed(2)} (limit ${R.stopLossPct}%)`,
       });
       addSell(p.asset, p.usd, true);
     }
 
     // 2. trailing stop from high-water mark (locks in gains a fixed stop can't)
-    if (rules.trailingStopPct && fromHighPct >= rules.trailingStopPct && high > entry) {
+    if (R.trailingStopPct && fromHighPct >= R.trailingStopPct && high > entry) {
       violations.push({
         rule: "trailing-stop",
         asset: p.asset,
         severity: "high",
-        detail: `${p.asset} down ${fromHighPct.toFixed(1)}% from high ${high.toFixed(2)} (trail ${rules.trailingStopPct}%)`,
+        detail: `${p.asset} down ${fromHighPct.toFixed(1)}% from high ${high.toFixed(2)} (trail ${R.trailingStopPct}%)`,
       });
       addSell(p.asset, p.usd, true);
     }
 
     // 3. take-profit: realize gains past target
-    if (rules.takeProfitPct && fromEntryPct >= rules.takeProfitPct) {
+    if (R.takeProfitPct && fromEntryPct >= R.takeProfitPct) {
       violations.push({
         rule: "take-profit",
         asset: p.asset,
         severity: "info",
-        detail: `${p.asset} up ${fromEntryPct.toFixed(1)}% from entry ${entry.toFixed(2)} (target ${rules.takeProfitPct}%) — locking in`,
+        detail: `${p.asset} up ${fromEntryPct.toFixed(1)}% from entry ${entry.toFixed(2)} (target ${R.takeProfitPct}%) — locking in`,
       });
       addSell(p.asset, p.usd, true);
     }
 
     // 4. concentration limit: trim, don't liquidate
     const pct = (p.usd / snapshot.total) * 100;
-    const excess = p.usd - (snapshot.total * rules.maxPositionPct) / 100;
-    if (pct > rules.maxPositionPct && excess >= rules.minTradeUsd) {
+    const excess = p.usd - (snapshot.total * R.maxPositionPct) / 100;
+    if (pct > R.maxPositionPct && excess >= R.minTradeUsd) {
       // only report what we'd actually act on — a dust excess is noise, not risk
       violations.push({
         rule: "max-position",
         asset: p.asset,
         severity: "medium",
-        detail: `${p.asset} is ${pct.toFixed(1)}% of portfolio (limit ${rules.maxPositionPct}%)`,
+        detail: `${p.asset} is ${pct.toFixed(1)}% of portfolio (limit ${R.maxPositionPct}%)`,
       });
       addSell(p.asset, excess, false);
     }
 
     // 5. volatility circuit breaker: flash-crash inside the rolling window
-    if (rules.volatility && hist.length >= 2) {
+    if (R.volatility && hist.length >= 2) {
       const windowDropPct = ((hist[0] - p.price) / hist[0]) * 100;
-      if (windowDropPct >= rules.volatility.dropPct) {
+      if (windowDropPct >= R.volatility.dropPct) {
         violations.push({
           rule: "circuit-breaker",
           asset: p.asset,
           severity: "high",
-          detail: `${p.asset} crashed ${windowDropPct.toFixed(1)}% within ${hist.length} ticks (limit ${rules.volatility.dropPct}%)`,
+          detail: `${p.asset} crashed ${windowDropPct.toFixed(1)}% within ${hist.length} ticks (limit ${R.volatility.dropPct}%)`,
         });
         addSell(p.asset, p.usd, true);
       }

@@ -85,4 +85,20 @@ ok(sells.length === 1 && sells[0].usd === 800 && sells[0].full, "one deduped act
 r = evaluate(snap([], 850), rules, { ...freshState(), peak: 1000 });
 ok(r.violations.length === 0 && r.actions.length === 0, "all-in-quote drawdown is silent");
 
+// 11. Cost basis: a second lot averages the entry, a trim keeps it
+st = freshState();
+r = evaluate(snap([pos("ETH", 4000, 400)], 600), rules, st); // 0.1 ETH @ 4000
+r = evaluate(snap([{ asset: "ETH", qty: 0.2, price: 4800, usd: 960 }], 40), rules, r.state); // +0.1 ETH @ 4800
+ok(Math.abs(r.state.entries.ETH.entry - 4400) < 1e-9, "entry becomes the weighted cost basis (4400)");
+ok(!r.violations.some((v) => v.rule === "take-profit"), "+9% vs basis: no false take-profit after averaging up");
+r = evaluate(snap([{ asset: "ETH", qty: 0.15, price: 4800, usd: 720 }], 280), rules, r.state); // trimmed
+ok(Math.abs(r.state.entries.ETH.entry - 4400) < 1e-9, "a trim keeps the cost basis");
+
+// 12. Per-asset override: BTC tolerates -8% when its stop-loss is 10%
+const perAsset = { ...rules, assets: { BTC: { stopLossPct: 10 } } };
+st = { ...freshState(), entries: { BTC: { entry: 100000, high: 100000, qty: 0.001 }, ETH: { entry: 4000, high: 4000, qty: 0.1 } } };
+r = evaluate(snap([pos("BTC", 92000, 92), pos("ETH", 3680, 368)], 500), perAsset, st); // both -8%
+ok(!r.violations.some((v) => v.rule === "stop-loss" && v.asset === "BTC"), "BTC override holds at -8%");
+ok(r.violations.some((v) => v.rule === "stop-loss" && v.asset === "ETH"), "ETH default 5% stop still fires");
+
 console.log(`✅ all ${checks} risk-engine checks passed`);

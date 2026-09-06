@@ -63,8 +63,9 @@ try {
   ok(/max-position/.test(out), "engine reported the concentration breach");
   ok(!/EXECUTED/.test(out), "nothing executed before human approval");
 
-  // approve → order goes through MCP → executed event → pending card clears
-  await approve.click();
+  // approve via keyboard (a11y) → order goes through MCP → executed event → pending card clears
+  await approve.focus();
+  await page.keyboard.press("Enter");
   await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "executed"), null, { timeout: 10000 });
   ok(true, "approval executed the trim through MCP and the feed shows it");
   await page.waitForFunction(() => document.getElementById("pendingCard").style.display === "none", null, { timeout: 5000 });
@@ -90,6 +91,32 @@ try {
   const evil = await browser.newPage();
   await evil.setContent(`<script>window.r = fetch("http://localhost:${PORT}/decide",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(r=>r.status).catch(()=>"blocked")</script>`);
   ok(["blocked", 403].includes(await evil.evaluate(() => window.r)), "cross-origin approval blocked (CORS/403)");
+
+  // Prometheus metrics reflect live state
+  const metrics = await page.evaluate(() => fetch("/metrics").then((r) => r.text()));
+  ok(/^jaga_portfolio_total \d/m.test(metrics) && /jaga_interventions_total 1\b/.test(metrics), "/metrics exposes portfolio + intervention counters");
+
+  // hot reload: tighten the concentration cap on disk → dashboard shows the new limit, feed logs it
+  cfg.rules.maxPositionPct = 30;
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+  await page.waitForFunction(() => document.getElementById("pos").textContent.includes("/ 30%"), null, { timeout: 15000 });
+  ok(/rules reloaded/.test(out), "config change picked up without restart");
+  fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg, rules: { ...cfg.rules, mode: "yolo" } }));
+  await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "config-rejected"), null, { timeout: 15000 });
+  ok(/config change rejected/.test(out), "invalid config edit rejected, old rules kept");
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+
+  // panic button: confirm dialog → every position sold to quote, regardless of propose mode
+  page.once("dialog", (d) => d.accept());
+  const executedBeforePanic = (out.match(/EXECUTED/g) || []).length;
+  await page.getByRole("button", { name: "🚨 De-risk everything" }).click();
+  await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "🚨 panic"), null, { timeout: 10000 });
+  for (let i = 0; i < 50 && (out.match(/EXECUTED/g) || []).length === executedBeforePanic; i++) await new Promise((r) => setTimeout(r, 200));
+  ok((out.match(/EXECUTED/g) || []).length > executedBeforePanic && /PANIC: human-triggered/.test(out), "panic liquidated positions through MCP");
+  const auditNow = fs.readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const panicIdx = auditNow.findIndex((e) => e.type === "panic");
+  const panicSells = auditNow.slice(panicIdx + 1).filter((e) => e.type === "action" && e.full && e.status === "FILLED");
+  ok(panicIdx > 0 && panicSells.length >= auditNow[panicIdx].positions.length, "audit shows one FILLED full sell per panic target");
 
   // the guardian is itself an MCP server other agents can query
   const mcp = new Client({ name: "e2e", version: "1" });

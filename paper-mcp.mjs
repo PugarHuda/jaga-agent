@@ -18,7 +18,7 @@ const HTTP_PORT = args.includes("--http") ? Number(args[args.indexOf("--http") +
 const REST = "https://data-api.binance.vision";
 const WS = "wss://data-stream.binance.vision/stream?streams=";
 const QUOTE = "USDC";
-const SYMBOLS = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC"];
+const SYMBOLS = ["BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "USDCUSDT"]; // USDCUSDT: lets a USDT balance be valued through a bridge
 const TAKER_FEE = 0.001; // Binance spot default tier, 0.1%
 
 const account = {
@@ -27,15 +27,23 @@ const account = {
     { asset: "BTC", free: 0.004 },
     { asset: "ETH", free: 0.1 },
     { asset: "SOL", free: 1.5 },
+    { asset: "USDT", free: 40 }, // no USDTUSDC pair on Binance → Jaga must value it via USDCUSDT
   ],
 };
 const prices = {}; // symbol -> last price, kept live by the WebSocket
 const filters = {}; // symbol -> { minNotional }
 let priceSource = "rest";
+let lastWsAt = 0;
 const orders = [];
 
-const get = async (path) => {
+const get = async (path, retried = false) => {
   const res = await fetch(REST + path, { signal: AbortSignal.timeout(8000) });
+  if ((res.status === 429 || res.status === 418) && !retried) {
+    const wait = Math.min(30, Number(res.headers.get("retry-after")) || 5);
+    console.error(`⏳ binance.vision ${res.status} — backing off ${wait}s`);
+    await new Promise((r) => setTimeout(r, wait * 1000));
+    return get(path, true);
+  }
   if (!res.ok) throw new Error(`binance.vision ${res.status} ${path}`);
   return res.json();
 };
@@ -60,6 +68,7 @@ function streamPrices() {
       if (data?.s && data?.c) {
         prices[data.s] = Number(data.c);
         priceSource = "websocket";
+        lastWsAt = Date.now();
       }
     };
     ws.onclose = ws.onerror = () => {
@@ -71,6 +80,7 @@ function streamPrices() {
 }
 
 async function refreshIfStale() {
+  if (priceSource === "websocket" && Date.now() - lastWsAt > 15000) priceSource = "rest (websocket stale)";
   if (priceSource === "websocket") return;
   const list = await get("/api/v3/ticker/price?symbols=" + encodeURIComponent(JSON.stringify(SYMBOLS)));
   for (const { symbol, price } of list) prices[symbol] = Number(price);

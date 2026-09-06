@@ -33,8 +33,11 @@ const PAGE = /* html */ `<!doctype html>
   .up{color:var(--green)} .down{color:var(--red)}
   h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
 </style></head><body>
-<h1>Jaga 🛡️ <span id="dot" style="color:var(--green)">●</span> live</h1>
-<div class="sub">deterministic risk guardian · Binance Agent OS (MCP) · code enforces, AI explains</div>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+<div><h1>Jaga 🛡️ <span id="dot" style="color:var(--green)">●</span> live</h1>
+<div class="sub">deterministic risk guardian · Binance Agent OS (MCP) · code enforces, AI explains</div></div>
+<button id="panic" title="Sell every position to the quote asset now, regardless of mode" style="padding:8px 14px;border-radius:8px;border:1px solid var(--red);background:#2a1215;color:var(--red);cursor:pointer;font:inherit;font-weight:700">🚨 De-risk everything</button>
+</div>
 <div class="grid">
   <div class="card"><div class="k">Portfolio</div><div class="v" id="total">—</div></div>
   <div class="card"><div class="k">Peak</div><div class="v" id="peak">—</div></div>
@@ -68,6 +71,7 @@ function draw(){
   x.lineTo(sx(series.length-1),c.height-pad);x.lineTo(sx(0),c.height-pad);x.closePath();
   x.fillStyle=(series.at(-1)>=series[0]?"#34d399":"#f87171")+"18";x.fill();
 }
+$("panic").onclick=()=>{if(confirm("Sell EVERY position to the quote asset right now?"))fetch("/panic",{method:"POST",headers:{"content-type":"application/json"},body:"{}"})};
 function decide(id,approve){
   fetch("/decide",{method:"POST",headers:{"content-type":"application/json"},
     body:JSON.stringify({id,approve})});
@@ -112,13 +116,16 @@ function tick(ev){
   tr(["Asset","Qty","Price","Value","% Port"],true);
   const cap=ev.limits?.maxPositionPct;
   for(const p of ev.positions){const pct=p.usd/ev.total*100;const r=tr([p.asset,p.qty.toFixed(6),fmt(p.price),fmt(p.usd),pct.toFixed(1)+"%"+(cap?" / "+cap+"%":"")]);if(cap&&pct>cap)r.lastChild.className="down"}
+  for(const p of ev.unpriced??[])tr([p.asset+" (valued via bridge, not tradable)",p.qty.toFixed(6),fmt(p.price),fmt(p.usd),(p.usd/ev.total*100).toFixed(1)+"%"]);
   tr([ev.quote,"","",fmt(ev.quoteFree),(ev.quoteFree/ev.total*100).toFixed(1)+"%"]);
 }
 // server injects current state at serve time — first paint is already live
 const BOOT=__BOOT__;
 series=BOOT.series;acts=BOOT.actions;$("acts").textContent=acts;draw();
 BOOT.events.forEach(feed);BOOT.pending.forEach(renderPending);if(BOOT.lastTick)tick(BOOT.lastTick);
-const es=new EventSource("/events");es.onopen=()=>$("dot").style.color="var(--green)";es.onerror=()=>$("dot").style.color="var(--dim)";
+let dropped=false;const es=new EventSource("/events");
+es.onopen=()=>{$("dot").style.color="var(--green)";if(dropped)location.reload()};
+es.onerror=()=>{$("dot").style.color="var(--dim)";dropped=true};
 es.onmessage=m=>{
   const ev=JSON.parse(m.data);
   if(ev.type==="tick")return tick(ev);
@@ -129,7 +136,7 @@ es.onmessage=m=>{
 };
 </script></body></html>`;
 
-export function startDashboard(port, onDecision, mcpHandler) {
+export function startDashboard(port, { onDecision, onPanic, metrics, mcp: mcpHandler } = {}) {
   const clients = new Set();
   const store = { series: [], events: [], actions: 0, lastTick: null, pending: [] };
   const broadcast = (ev) => {
@@ -137,20 +144,23 @@ export function startDashboard(port, onDecision, mcpHandler) {
     clients.forEach((c) => c.write(line));
   };
 
+  // CSRF guard for state-changing POSTs: browsers always send Origin on cross-site
+  // POSTs — reject any origin that isn't this dashboard itself (curl/local tools send
+  // none). JSON-only: an HTML form can't send that content-type cross-site without preflight.
+  const guarded = (req, res) => {
+    const origin = req.headers.origin;
+    if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return res.writeHead(403).end(), false;
+    if (!/^application\/json/.test(req.headers["content-type"] ?? "")) return res.writeHead(415).end(), false;
+    return true;
+  };
+
   const server = http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/decide") {
-      // CSRF guard: browsers always send Origin on cross-site POSTs — reject any
-      // origin that isn't this dashboard itself (curl/local tools send none)
-      const origin = req.headers.origin;
-      if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) {
-        res.writeHead(403).end();
-        return;
-      }
-      // JSON-only: an HTML form can't send this content-type cross-site without preflight
-      if (!/^application\/json/.test(req.headers["content-type"] ?? "")) {
-        res.writeHead(415).end();
-        return;
-      }
+    if (req.method === "POST" && req.url === "/panic") {
+      if (!guarded(req, res)) return;
+      Promise.resolve(onPanic?.()).catch((e) => console.error("panic failed:", e.message));
+      res.writeHead(204).end();
+    } else if (req.method === "POST" && req.url === "/decide") {
+      if (!guarded(req, res)) return;
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -166,6 +176,9 @@ export function startDashboard(port, onDecision, mcpHandler) {
           res.writeHead(400).end();
         }
       });
+    } else if (req.url === "/metrics" && metrics) {
+      res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
+      res.end(metrics());
     } else if (req.url === "/mcp" && mcpHandler) {
       // Jaga as an MCP server (read-only tools) — same loopback-only port
       mcpHandler(req, res).catch((e) => {

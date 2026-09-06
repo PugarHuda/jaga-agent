@@ -14,7 +14,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { evaluate, freshState } from "./engine.mjs";
 import { startDashboard } from "./dashboard.mjs";
-import { toolResult, parseBalances, parsePrices, validateConfig } from "./shapes.mjs";
+import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig } from "./shapes.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -72,22 +72,7 @@ async function takeSnapshot(mcp, cfg) {
   const a = cfg.tools.args ?? {};
   const balances = parseBalances(toolResult(await mcp.callTool({ name: cfg.tools.account, arguments: a.account ?? {} })));
   const prices = parsePrices(toolResult(await mcp.callTool({ name: cfg.tools.prices, arguments: a.prices ?? {} })));
-  const quote = cfg.rules.quote;
-  const priceOf = (asset) => prices[`${asset}${quote}`] || 0;
-  let quoteFree = 0;
-  const positions = [];
-  for (const b of balances) {
-    if (b.free <= 0) continue;
-    if (b.asset === quote) {
-      quoteFree = b.free;
-      continue;
-    }
-    const price = priceOf(b.asset);
-    if (!price) continue; // ponytail: assets without a direct quote pair are ignored
-    positions.push({ asset: b.asset, qty: b.free, price, usd: b.free * price });
-  }
-  const total = quoteFree + positions.reduce((s, p) => s + p.usd, 0);
-  return { positions, quote, quoteFree, total, priceOf };
+  return valueSnapshot(balances, prices, cfg.rules.quote);
 }
 
 // counterfactual: what the assets Jaga sold would be worth if we'd kept holding.
@@ -122,13 +107,13 @@ async function alert(cfg, text) {
 // Venice AI, or any compatible endpoint. Configure via env:
 //   LLM_API_KEY (or OPENROUTER_API_KEY / VENICE_API_KEY)
 //   LLM_BASE_URL (default https://openrouter.ai/api/v1; Venice: https://api.venice.ai/api/v1)
-//   LLM_MODEL    (default openrouter/auto)
+//   LLM_MODEL    (default openai/gpt-4o-mini)
 // The LLM only ever narrates — it has no path to the executor.
 async function askLLM(cfg, system, payload, maxTokens = 600) {
   const key = process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY || process.env.VENICE_API_KEY;
   if (!key) return null;
   const base = process.env.LLM_BASE_URL || cfg.llm?.baseUrl || "https://openrouter.ai/api/v1";
-  const model = process.env.LLM_MODEL || cfg.llm?.model || "openrouter/auto";
+  const model = process.env.LLM_MODEL || cfg.llm?.model || "openai/gpt-4o-mini"; // ponytail: cheap + reliable; any OpenAI-compatible model works
   const res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
@@ -193,16 +178,85 @@ async function execute(ctx, a) {
     return;
   }
   const status = res.status ?? "ok";
-  if (status === "FILLED") {
-    const asset = a.symbol.slice(0, -cfg.rules.quote.length);
-    const qty = Number(res.executedQty) || 0;
-    const fillPrice = Number(res.fillPrice) || (qty ? Number(res.cummulativeQuoteQty ?? a.usd) / qty : 0);
-    if (qty && fillPrice) ctx.ledger.push({ asset, qty, fillPrice });
-    if (ctx.ledger.length > 200) ctx.ledger.shift(); // ponytail: rolling window, not forever
+  audit({ type: "action", ...a, status, fillPrice: res.fillPrice, executedQty: res.executedQty, fee: res.fee, reason: res.reason });
+  if (status !== "FILLED") {
+    // REJECTED / EXPIRED / partial: not an intervention — say so loudly, retry next tick
+    console.log(`   ❌ ORDER ${status} ${a.side} ${a.symbol} ~${a.usd}${res.reason ? `: ${res.reason}` : ""}`);
+    dash?.emit({ type: "violation", rule: "order-" + String(status).toLowerCase(), text: `${a.side} ${a.symbol} ~${a.usd}${res.reason ? `: ${res.reason}` : ""}` });
+    return false;
   }
-  console.log(`   ✅ EXECUTED ${a.side} ${a.symbol} ~$${a.usd}: ${status}`);
-  audit({ type: "action", ...a, status, fillPrice: res.fillPrice, executedQty: res.executedQty, fee: res.fee });
-  dash?.emit({ type: "action", rule: "executed", text: `${a.side} ${a.symbol} ~$${a.usd} → ${status}` });
+  const asset = a.symbol.slice(0, -cfg.rules.quote.length);
+  const qty = Number(res.executedQty) || 0;
+  const fillPrice = Number(res.fillPrice) || (qty ? Number(res.cummulativeQuoteQty ?? a.usd) / qty : 0);
+  if (qty && fillPrice) ctx.ledger.push({ asset, qty, fillPrice });
+  if (ctx.ledger.length > 200) ctx.ledger.shift(); // ponytail: rolling window, not forever
+  ctx.interventions++;
+  console.log(`   ✅ EXECUTED ${a.side} ${a.symbol} ~${a.usd}: FILLED`);
+  dash?.emit({ type: "action", rule: "executed", text: `${a.side} ${a.symbol} ~${a.usd} → FILLED` });
+  return true;
+}
+
+// Emergency stop: the human hits the red button → everything sellable goes to quote
+// NOW, regardless of mode. Deterministic, audited, no LLM involved.
+async function panic(ctx) {
+  const s = ctx.last ?? (await takeSnapshot(ctx.mcp, ctx.cfg));
+  const targets = s.positions.filter((p) => p.usd >= ctx.cfg.rules.minTradeUsd);
+  console.log(`🚨 PANIC: human-triggered de-risk of ${targets.length} position(s)`);
+  audit({ type: "panic", positions: targets.map((p) => p.asset) });
+  ctx.dash?.emit({ type: "violation", rule: "🚨 panic", text: `human-triggered de-risk: selling ${targets.map((p) => p.asset).join(", ") || "nothing (already in quote)"}` });
+  for (const p of targets) await execute(ctx, { side: "SELL", symbol: `${p.asset}${s.quote}`, usd: Math.round(p.usd * 100) / 100, full: true });
+  ctx.pending.clear();
+  persist(ctx);
+}
+
+// Prometheus text exposition — scrape http://127.0.0.1:7777/metrics
+function metrics(ctx) {
+  const s = ctx.last;
+  const dd = s && ctx.state.peak ? ((ctx.state.peak - s.total) / ctx.state.peak) * 100 : 0;
+  const lines = [
+    ["jaga_portfolio_total", "gauge", s?.total ?? 0],
+    ["jaga_portfolio_peak", "gauge", ctx.state.peak ?? 0],
+    ["jaga_drawdown_pct", "gauge", dd],
+    ["jaga_quote_free", "gauge", s?.quoteFree ?? 0],
+    ["jaga_interventions_total", "counter", ctx.interventions],
+    ["jaga_damage_avoided", "gauge", s ? damageAvoided(ctx.ledger, s) : 0],
+    ["jaga_ticks_total", "counter", ctx.ticks],
+    ["jaga_errors_total", "counter", ctx.errors],
+    ["jaga_pending_proposals", "gauge", ctx.pending.size],
+    ["jaga_last_violations", "gauge", ctx.lastViolations.length],
+  ];
+  let out = lines.map(([n, t, v]) => `# TYPE ${n} ${t}\n${n} ${Number(v)}`).join("\n") + "\n";
+  out += "# TYPE jaga_position_usd gauge\n" + (s?.positions ?? []).map((p) => `jaga_position_usd{asset="${p.asset}"} ${p.usd}`).join("\n") + "\n";
+  return out;
+}
+
+// Hot reload: edit config.json while Jaga runs → new thresholds apply on the next
+// tick (validated first; a bad edit is rejected and the old rules stay).
+function watchConfig(ctx) {
+  let timer;
+  try {
+    fs.watch(CONFIG_PATH, () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const next = loadJson(CONFIG_PATH, null);
+        const errs = next ? validateConfig(next) : ["config unreadable"];
+        if (errs.length) {
+          console.error("⚠️  config change rejected:\n  " + errs.join("\n  "));
+          ctx.dash?.emit({ type: "violation", rule: "config-rejected", text: errs.join("; ") });
+          return;
+        }
+        const before = JSON.stringify(ctx.cfg.rules);
+        Object.assign(ctx.cfg, { rules: next.rules, intervalSec: next.intervalSec, advisor: next.advisor, alerts: next.alerts, llm: next.llm });
+        if (before !== JSON.stringify(next.rules)) {
+          console.log("♻️  rules reloaded from " + CONFIG_PATH);
+          audit({ type: "config", rules: next.rules });
+          ctx.dash?.emit({ type: "advisor", rule: "♻️ config", text: `rules reloaded: mode=${next.rules.mode} maxPos=${next.rules.maxPositionPct}% SL=${next.rules.stopLossPct}% DD=${next.rules.maxDrawdownPct}%` });
+        }
+      }, 300);
+    });
+  } catch (e) {
+    console.error("config watch unavailable:", e.message);
+  }
 }
 
 function propose(ctx, a) {
@@ -246,6 +300,7 @@ function jagaMcpHandler(ctx) {
         peak: ctx.state.peak,
         drawdownPct: s && ctx.state.peak ? ((ctx.state.peak - s.total) / ctx.state.peak) * 100 : 0,
         positions: s?.positions ?? [],
+        unpriced: s?.unpriced ?? [],
         quoteFree: s?.quoteFree ?? 0,
         lastViolations: ctx.lastViolations,
         interventions: ctx.interventions,
@@ -298,6 +353,7 @@ async function tick(ctx) {
     quote: snapshot.quote,
     quoteFree: snapshot.quoteFree,
     positions: snapshot.positions,
+    unpriced: snapshot.unpriced,
     mode: cfg.rules.mode,
     limits: { maxDrawdownPct: cfg.rules.maxDrawdownPct, maxPositionPct: cfg.rules.maxPositionPct },
   });
@@ -310,10 +366,8 @@ async function tick(ctx) {
       dash?.emit({ type: "violation", rule: v.rule, text: v.detail });
     }
     for (const a of actions) {
-      if (cfg.rules.mode === "execute") {
-        await execute(ctx, a);
-        ctx.interventions++;
-      } else propose(ctx, a);
+      if (cfg.rules.mode === "execute") await execute(ctx, a);
+      else propose(ctx, a);
     }
     // narration runs off the critical path: the next tick never waits for an LLM
     void narrate(cfg, snapshot, violations, actions, cfg.rules.mode).then(async (report) => {
@@ -353,6 +407,7 @@ async function main() {
     pending: new Map(),
     ticks: 0,
     interventions: 0,
+    errors: 0,
     last: null,
     lastViolations: [],
     lastTickAt: null,
@@ -360,8 +415,14 @@ async function main() {
     mcp: null,
   };
   ctx.dash = cfg.dashboard?.port
-    ? startDashboard(cfg.dashboard.port, (id, approve) => onDecision(ctx, id, approve), jagaMcpHandler(ctx))
+    ? startDashboard(cfg.dashboard.port, {
+        onDecision: (id, approve) => onDecision(ctx, id, approve),
+        onPanic: () => panic(ctx),
+        metrics: () => metrics(ctx),
+        mcp: jagaMcpHandler(ctx),
+      })
     : null;
+  watchConfig(ctx);
   console.log(`Jaga 🛡️  guarding via MCP (${cfg.mcp.url ?? cfg.mcp.command}) — mode=${cfg.rules.mode}`);
   ctx.mcp = await connectMcp(cfg);
   if (flag("--list-tools")) {
@@ -382,6 +443,7 @@ async function main() {
       failures = 0;
     } catch (e) {
       console.error("tick failed:", e.message);
+      ctx.errors++;
       audit({ type: "error", error: e.message });
       if (++failures >= 3) {
         console.error("↻ reconnecting MCP…");

@@ -14,18 +14,23 @@ export function toolResult(res) {
 }
 
 // {balances:[{asset,free}]} | [{asset,free}] | {data:{balances}} | {BTC:0.1,...} → [{asset, free}]
+// Only real ticker symbols get through: anything else (prompt-injection text smuggled
+// into an asset name, say) is dropped before it can reach the LLM analyst or the UI.
+const ASSET = /^[A-Z0-9]{2,12}$/;
+const PAIR = /^[A-Z0-9]{4,24}$/;
+
 export function parseBalances(x) {
   const src = x?.balances ?? x?.data?.balances ?? x?.data ?? x;
   if (Array.isArray(src)) {
     return src
       .map((b) => ({ asset: String(b.asset ?? b.coin ?? b.symbol ?? "").toUpperCase(), free: Number(b.free ?? b.available ?? b.balance ?? b.amount ?? 0) }))
-      .filter((b) => b.asset && Number.isFinite(b.free));
+      .filter((b) => ASSET.test(b.asset) && Number.isFinite(b.free));
   }
   if (src && typeof src === "object") {
     return Object.entries(src)
       .filter(([, v]) => typeof v === "number" || typeof v === "string")
       .map(([asset, v]) => ({ asset: asset.toUpperCase(), free: Number(v) }))
-      .filter((b) => Number.isFinite(b.free));
+      .filter((b) => ASSET.test(b.asset) && Number.isFinite(b.free));
   }
   return [];
 }
@@ -40,12 +45,12 @@ export function parsePrices(x) {
     for (const p of src) {
       const s = p.symbol ?? p.pair;
       const v = num(p);
-      if (s && v > 0) out[key(s)] = v;
+      if (s && v > 0 && PAIR.test(key(s))) out[key(s)] = v;
     }
   } else if (src && typeof src === "object") {
     for (const [k, v] of Object.entries(src)) {
       const n = num(v);
-      if (n > 0) out[key(k)] = n;
+      if (n > 0 && PAIR.test(key(k))) out[key(k)] = n;
     }
   }
   return out;
@@ -76,3 +81,38 @@ export function validateConfig(cfg) {
   return errs;
 }
 
+
+// Balances + prices → portfolio snapshot. Pure, so it's testable without an MCP server.
+export function valueSnapshot(balances, prices, quote) {
+  const priceOf = (asset) => prices[`${asset}${quote}`] || 0;
+  // no direct pair? value it through USDT/USDC/BTC so the portfolio total (and every
+  // concentration %) is right. Such assets are counted but never traded — Jaga only
+  // sells ASSET→quote pairs that exist.
+  const toQuote = (b) => (b === quote ? 1 : prices[`${b}${quote}`] || (prices[`${quote}${b}`] ? 1 / prices[`${quote}${b}`] : 0));
+  const bridged = (asset) => {
+    for (const b of ["USDT", "USDC", "BTC"]) {
+      const via = asset === b ? 1 : prices[`${asset}${b}`];
+      const rate = via && toQuote(b);
+      if (via && rate) return via * rate;
+    }
+    return 0;
+  };
+  let quoteFree = 0;
+  const positions = [];
+  const unpriced = [];
+  for (const b of balances) {
+    if (b.free <= 0) continue;
+    if (b.asset === quote) {
+      quoteFree = b.free;
+      continue;
+    }
+    const price = priceOf(b.asset);
+    if (price) positions.push({ asset: b.asset, qty: b.free, price, usd: b.free * price });
+    else {
+      const est = bridged(b.asset);
+      if (est) unpriced.push({ asset: b.asset, qty: b.free, price: est, usd: b.free * est });
+    }
+  }
+  const total = quoteFree + positions.reduce((s, p) => s + p.usd, 0) + unpriced.reduce((s, p) => s + p.usd, 0);
+  return { positions, unpriced, quote, quoteFree, total, priceOf };
+}

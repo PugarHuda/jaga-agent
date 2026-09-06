@@ -6,3 +6,4 @@ audit.jsonl
 demo.log
 .playwright-mcp/
 paper.log
+*.mp4

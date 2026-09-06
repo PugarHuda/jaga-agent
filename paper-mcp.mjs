@@ -25,18 +25,19 @@ const REPLAY_HOURS = Number(opt("--hours", 12));
 const REPLAY_TICK_MS = Number(opt("--tick", 3)) * 1000; // real seconds between steps — every caller sees the same clock
 const REST = "https://data-api.binance.vision";
 const WS = "wss://data-stream.binance.vision/stream?streams=";
-const QUOTE = "USDC";
+const QUOTE = opt("--quote", "USDC").toUpperCase(); // --quote USDT with --symbols BTCUSDT,… for a USDT book
 // --symbols BTCUSDC,ETHUSDC,… overrides; USDCUSDT is always included so a USDT balance can be valued through a bridge
-const SYMBOLS = [...new Set([...opt("--symbols", "BTCUSDC,ETHUSDC,BNBUSDC,SOLUSDC").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean), "USDCUSDT"])];
+const SYMBOLS = [...new Set([...opt("--symbols", `BTC${QUOTE},ETH${QUOTE},BNB${QUOTE},SOL${QUOTE}`).split(",").map((s) => s.trim().toUpperCase()).filter(Boolean), "USDCUSDT"])];
+for (const s of SYMBOLS) if (s !== "USDCUSDT" && !s.endsWith(QUOTE)) throw new Error(`symbol ${s} is not quoted in ${QUOTE} — pass --quote to match your --symbols`);
 const TAKER_FEE = 0.001; // Binance spot default tier, 0.1%
 
 const account = {
   balances: [
-    { asset: "USDC", free: 600 },
+    { asset: QUOTE, free: 600 },
     { asset: "BTC", free: 0.004 },
     { asset: "ETH", free: 0.1 },
     { asset: "SOL", free: 1.5 },
-    { asset: "USDT", free: 40 }, // no USDTUSDC pair on Binance → Jaga must value it via USDCUSDT
+    { asset: QUOTE === "USDC" ? "USDT" : "USDC", free: 40 }, // the other stablecoin: no direct pair → Jaga must value it via USDCUSDT
   ],
 };
 const prices = {}; // symbol -> last price, kept live by the WebSocket
@@ -198,26 +199,30 @@ async function placeOrder({ symbol, side, quoteOrderQty, quantity }) {
 }
 
 function buildServer() {
-  const server = new McpServer({ name: "binance-paper", version: "2.0.0" });
+  const server = new McpServer({ name: "binance-paper", version: "2.0.0" }, { instructions: `Paper Binance subaccount quoted in ${QUOTE}: real market data (${REPLAY_FROM ? "historical replay" : "live"}), simulated balances shared by every connected agent. place_order moves money in this wallet.` });
+  const RO = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   // structuredContent must be an object per MCP spec — arrays get wrapped
   const json = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj) }], structuredContent: Array.isArray(obj) ? { items: obj } : obj });
-  server.tool("get_account", "Paper subaccount balances (shared by every connected agent)", async () => json(account));
-  server.tool("get_prices", `LIVE Binance spot prices via ${priceSource} (data-stream/data-api.binance.vision)`, async () => {
+  server.registerTool("get_account", { description: "Paper subaccount balances (shared by every connected agent)", annotations: { title: "Account", ...RO } }, async () => json(account));
+  server.registerTool("get_prices", { description: `Binance spot prices via ${priceSource} (data-stream/data-api.binance.vision)`, annotations: { title: "Prices", ...RO, idempotentHint: false } }, async () => {
     await refreshIfStale();
     return json({ ...prices, _source: priceSource, ...(REPLAY_FROM ? { _replayTime: replay.t, _replayMinute: replay.i, _replayTotal: replay.n } : {}) });
   });
-  server.tool(
+  server.registerTool(
     "place_order",
-    "Market order filled against the live Binance order book, taker fee applied, exchange min-notional enforced",
-    { symbol: z.string(), side: z.enum(["BUY", "SELL"]), type: z.string().optional(), quoteOrderQty: z.number().positive().optional(), quantity: z.number().positive().optional() },
+    {
+      description: "Market order filled against the live Binance order book, taker fee applied, exchange filters (NOTIONAL, LOT_SIZE) enforced",
+      inputSchema: { symbol: z.string(), side: z.enum(["BUY", "SELL"]), type: z.string().optional(), quoteOrderQty: z.number().positive().optional(), quantity: z.number().positive().optional() },
+      annotations: { title: "Place order", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
     async (o) => {
       const r = await placeOrder(o);
       console.error(`${r.status === "FILLED" ? "📗" : "📕"} ${o.side} ${o.symbol} ${o.quantity !== undefined ? `qty ${o.quantity}` : `${o.quoteOrderQty.toFixed(2)}`} → ${r.status}${r.fillPrice ? ` @ ${r.fillPrice.toFixed(2)} (slip ${r.slippagePct.toFixed(3)}%, fee ${r.fee.toFixed(6)} ${r.feeAsset})` : ` (${r.reason})`}`);
       return json(r);
     }
   );
-  server.tool("get_orders", "Every order filled on this paper wallet", async () => json(orders));
-  server.tool("get_symbol_info", "Real Binance exchange filters (LOT_SIZE, NOTIONAL…) for the paper symbols, verbatim from /api/v3/exchangeInfo", async () => json(exchangeInfo));
+  server.registerTool("get_orders", { description: "Every order filled on this paper wallet", annotations: { title: "Orders", ...RO } }, async () => json(orders));
+  server.registerTool("get_symbol_info", { description: "Real Binance exchange filters (LOT_SIZE, NOTIONAL…) for the paper symbols, verbatim from /api/v3/exchangeInfo", annotations: { title: "Symbol filters", ...RO } }, async () => json(exchangeInfo));
   return server;
 }
 

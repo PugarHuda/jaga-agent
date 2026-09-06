@@ -117,8 +117,10 @@ try {
   const b = new Client({ name: "agent-b", version: "1" });
   await a.connect(new StreamableHTTPClientTransport(url));
   await b.connect(new StreamableHTTPClientTransport(url));
-  const names = (await a.listTools()).tools.map((t) => t.name);
+  const toolList = (await a.listTools()).tools;
+  const names = toolList.map((t) => t.name);
   ok(["get_account", "get_prices", "place_order"].every((n) => names.includes(n)), "paper server exposes the tool trio");
+  ok(toolList.find((t) => t.name === "place_order").annotations.destructiveHint === true && toolList.find((t) => t.name === "get_account").annotations.readOnlyHint === true, "paper tools carry MCP annotations (place_order destructive, reads read-only)");
   const prices = parsePrices(toolResult(await a.callTool({ name: "get_prices", arguments: {} })));
   ok(prices.ETHUSDC > 100 && prices.BTCUSDC > 1000, "live prices look like prices");
   ok(prices.USDCUSDT > 0.9 && prices.USDCUSDT < 1.1, "bridge pair USDCUSDT streamed");
@@ -225,7 +227,10 @@ try {
     ok(refused, "MCP without bearer refused");
     const good = new Client({ name: "yes", version: "1" });
     await good.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), { requestInit: { headers: { authorization: "Bearer correct-horse-battery-staple" } } }));
-    ok((await good.listTools()).tools.some((t) => t.name === "risk_status"), "MCP with bearer works (claude mcp add --header)");
+    const tools = (await good.listTools()).tools;
+    ok(tools.some((t) => t.name === "risk_status"), "MCP with bearer works (claude mcp add --header)");
+    ok(tools.every((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === false), "every Jaga tool is annotated read-only per the MCP spec");
+    ok(/read-only/.test(good.getInstructions() ?? ""), "server instructions tell clients everything is read-only");
     await good.close();
   } finally {
     jag.kill();
@@ -234,5 +239,33 @@ try {
 } finally {
   rsrv.kill();
 }
+
+// --- a USDT-quoted paper book + JSON logs (container mode) --------------------------
+const UPORT = 7798;
+const usrv = spawn(process.execPath, ["paper-mcp.mjs", "--http", String(UPORT), "--quote", "USDT", "--symbols", "BTCUSDT,ETHUSDT"], { stdio: ["ignore", "ignore", "pipe"] });
+let uerr = "";
+usrv.stderr.on("data", (d) => (uerr += d));
+try {
+  for (let i = 0; i < 100 && !/paper MCP/.test(uerr); i++) await new Promise((r) => setTimeout(r, 200));
+  const u = new Client({ name: "u", version: "1" });
+  await u.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${UPORT}/mcp`)));
+  const up = parsePrices(toolResult(await u.callTool({ name: "get_prices", arguments: {} })));
+  const ub = parseBalances(toolResult(await u.callTool({ name: "get_account", arguments: {} })));
+  ok(up.BTCUSDT > 1000 && up.ETHUSDT > 100, "USDT-quoted book streams live BTCUSDT/ETHUSDT");
+  ok(ub.some((b) => b.asset === "USDT" && b.free === 600) && ub.some((b) => b.asset === "USDC"), "wallet quoted in USDT, USDC becomes the bridged stablecoin");
+  const usell = toolResult(await u.callTool({ name: "place_order", arguments: { symbol: "ETHUSDT", side: "SELL", type: "MARKET", quoteOrderQty: 20 } }));
+  ok(usell.status === "FILLED" && usell.feeAsset === "USDT", "sells settle in the configured quote");
+  await u.close();
+} finally {
+  usrv.kill();
+}
+const jl = spawn(process.execPath, ["jaga.mjs", "--config", "config.paper.json", "--state", path.join(os.tmpdir(), `jaga-jl-${process.pid}.json`), "--audit", path.join(os.tmpdir(), `jaga-jl-${process.pid}.jsonl`)], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, JAGA_LOG: "json", OPENROUTER_API_KEY: "", LLM_API_KEY: "", VENICE_API_KEY: "" } });
+let jlout = "";
+jl.stdout.on("data", (d) => (jlout += d));
+jl.stderr.on("data", (d) => (jlout += d));
+await new Promise((r) => setTimeout(r, 2500));
+jl.kill();
+const jlines = jlout.trim().split("\n").filter(Boolean);
+ok(jlines.length > 0 && jlines.every((l) => { try { const o = JSON.parse(l); return o.ts && o.level && typeof o.msg === "string"; } catch { return false; } }), "JAGA_LOG=json emits one JSON object per line (" + jlines.length + " lines)");
 
 console.log(`✅ all ${checks} integration checks passed`);

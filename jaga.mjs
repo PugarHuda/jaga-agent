@@ -23,6 +23,14 @@ const opt = (n, d) => {
   return i >= 0 ? args[i + 1] : d;
 };
 
+// JAGA_LOG=json → one JSON object per line (Docker / log aggregators); default is human text
+if (process.env.JAGA_LOG === "json") {
+  for (const level of ["log", "error"]) {
+    const raw = console[level].bind(console);
+    console[level] = (...a) => raw(JSON.stringify({ ts: new Date().toISOString(), level: level === "log" ? "info" : "error", msg: a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ").replace(/\n+/g, " ").trim() }));
+  }
+}
+
 const CONFIG_PATH = opt("--config", "config.json");
 const STATE_PATH = opt("--state", "state.json");
 const AUDIT_PATH = opt("--audit", "audit.jsonl");
@@ -108,7 +116,9 @@ async function alert(cfg, text) {
     const res = await fetch(cfg.alerts.webhook, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: text.slice(0, 1900), text }), // content=Discord, text=Slack/generic
+      // content=Discord, text=Slack/generic. allowed_mentions: report text comes from an LLM
+      // that reads MCP data — it must never be able to @everyone your server.
+      body: JSON.stringify({ content: text.slice(0, 1900), text, allowed_mentions: { parse: [] } }),
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) console.error(`alert failed: HTTP ${res.status}`);
@@ -343,8 +353,12 @@ function jagaMcpHandler(ctx) {
   // structuredContent must be an object per MCP spec — arrays get wrapped
   const json = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj) }], structuredContent: Array.isArray(obj) ? { items: obj } : obj });
   return async (req, res) => {
-    const server = new McpServer({ name: "jaga", version: "2.1.0" });
-    server.tool("risk_status", "Current portfolio snapshot, drawdown, active rules, last violations, interventions and damage avoided", async () => {
+    const server = new McpServer(
+      { name: "jaga", version: "2.1.0" },
+      { instructions: "Jaga is a deterministic risk guardian watching a Binance subaccount. Every tool here is read-only: it reports what the guard sees and did. Approvals and the panic button live on the human dashboard, never in MCP." }
+    );
+    const RO = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+    server.registerTool("risk_status", { description: "Current portfolio snapshot, drawdown, active rules, rule headroom, last violations, interventions and damage avoided", annotations: { title: "Risk status", ...RO } }, async () => {
       const s = ctx.last;
       return json({
         mode: ctx.cfg.rules.mode,
@@ -362,10 +376,10 @@ function jagaMcpHandler(ctx) {
         lastTick: ctx.lastTickAt,
       });
     });
-    server.tool("pending_proposals", "Orders proposed by the risk engine and awaiting human approval (propose mode)", async () =>
+    server.registerTool("pending_proposals", { description: "Orders proposed by the risk engine and awaiting human approval (propose mode)", annotations: { title: "Pending proposals", ...RO } }, async () =>
       json([...ctx.pending.entries()].map(([id, a]) => ({ id, ...a })))
     );
-    server.tool("audit_tail", "Last N entries of the hash-chained audit trail", { n: z.number().int().min(1).max(200).default(20) }, async ({ n }) => {
+    server.registerTool("audit_tail", { description: "Last N entries of the hash-chained audit trail", inputSchema: { n: z.number().int().min(1).max(200).default(20) }, annotations: { title: "Audit tail", ...RO } }, async ({ n }) => {
       let lines = [];
       try {
         lines = fs.readFileSync(AUDIT_PATH, "utf8").trim().split("\n").slice(-n).map((l) => JSON.parse(l));

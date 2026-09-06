@@ -242,6 +242,11 @@ export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp
     }
   });
   // loopback by default — beyond it, config validation insists on a token
+  server.on("error", (e) => {
+    // a second Jaga on the same port used to die with a raw stack trace
+    console.error(e.code === "EADDRINUSE" ? `❌ port ${port} is already in use (another Jaga running?). Change dashboard.port in your config or stop the other process.` : `❌ dashboard failed: ${e.message}`);
+    process.exit(1);
+  });
   server.listen(port, host, () => console.log(`📊 dashboard → http://${host === "0.0.0.0" ? "localhost" : host}:${port}${token ? "/?token=…  (token auth on)" : ""}`));
   const heartbeat = setInterval(() => clients.forEach((c) => c.write(":hb\n\n")), 15000);
 

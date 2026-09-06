@@ -398,7 +398,7 @@ function jagaMcpHandler(ctx) {
   const json = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj) }], structuredContent: Array.isArray(obj) ? { items: obj } : obj });
   return async (req, res) => {
     const server = new McpServer(
-      { name: "jaga", version: "2.1.0" },
+      { name: "jaga", version: VERSION },
       { instructions: "Jaga is a deterministic risk guardian watching a Binance subaccount. Every tool here is read-only: it reports what the guard sees and did. Approvals and the panic button live on the human dashboard, never in MCP." }
     );
     const RO = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };

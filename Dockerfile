@@ -3,7 +3,7 @@
 #   docker run --rm -p 7777:7777 -e JAGA_DASHBOARD_TOKEN=change-me-please-16 jaga            # paper mode, live Binance prices
 #   docker run --rm -p 7777:7777 -e JAGA_DASHBOARD_TOKEN=change-me-please-16 jaga npm run demo  # real Aug-2024 crash replay
 # Then open http://localhost:7777/?token=change-me-please-16
-FROM node:22-alpine
+FROM node:24-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev

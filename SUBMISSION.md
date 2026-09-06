@@ -25,7 +25,7 @@ Before re-recording: `OPENROUTER_API_KEY` is already set as a Windows user env v
 >
 > Everyone builds agents that trade. Jaga watches your Agent OS subaccount and enforces 8 hard risk rules a prompt injection can't talk it out of: stop-loss, trailing stop, take-profit, concentration, exposure, circuit breaker, daily loss, max drawdown.
 >
-> Code enforces. AI explains. Live dashboard, hash-chained audit trail, AI incident reports, panic button, Prometheus, Docker. MCP client AND server. Backtested on the real Aug-2024 crash: +3.45% vs holding while a rogue agent pumped ETH.
+> Code enforces. AI explains. Live dashboard, hash-chained audit trail, AI incident reports, panic button, Prometheus, Docker. MCP client AND server. Backtested on the real Aug-2024 crash: 3-4% ahead of holding while a rogue agent pumped ETH.
 >
 > 🎥 demo below · 💻 github.com/PugarHuda/jaga-agent
 

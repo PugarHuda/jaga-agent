@@ -7,6 +7,7 @@
 - [x] Video recorded: `jaga-demo.mp4` (118s, silent dashboard capture: paper 50s + demo 65s). Add voice-over per script below, or upload as-is.
 - [ ] Reply/quote-repost with video + GitHub link (draft below)
 - [ ] Complete the survey: app.binance.com/uni-qr/user-survey/2913aa200aac462c89a737779393f3d4
+- [ ] Track B: SKIPPED by decision (no Binance account connection). Track A only.
 - [ ] Deadline: **Sept 8, 2026, 23:59 UTC**
 
 ## Video script (~90 seconds)
@@ -35,7 +36,7 @@ Before re-recording: `OPENROUTER_API_KEY` is already set as a Windows user env v
 
 Official endpoint: `https://agent.binance.com/mcp/agentic` (Streamable HTTP, OAuth 2.1 PKCE, no API keys). Docs: developers.binance.com/en/docs/agent-native/mcp-server/agentic. Reachable through VPN (401 + OAuth metadata confirmed; api.binance.com still 451 without it).
 
-1. **Done:** `claude mcp add binance-mcp-server --transport http https://agent.binance.com/mcp/agentic` (registered in this project's Claude Code config).
+1. `claude mcp add binance-mcp-server --transport http https://agent.binance.com/mcp/agentic` (was registered, removed again 2026-09-06 — Track B skipped).
 2. In Claude Code type `/mcp` → pick **binance-mcp-server** → browser opens Binance consent screen → grant **Account + Trade** scopes (skip Transfer). The Agentic subaccount is created automatically on first authorization.
 3. Fund the subaccount manually (agent cannot pull from main): https://www.binance.com/en/my/sub-account/asset-management/transfer?asset=USDC — small, e.g. $15–20 USDC.
 4. In Claude Code (new session so the tools load): "Use the Binance MCP Server to show BTCUSDT price and 24h change" (proves connect), then "show my Agentic subaccount balance", then "market buy $6 of BTC with USDC on spot" → confirm when it restates the order. That's the qualifying Track B trade. Screenshot it.

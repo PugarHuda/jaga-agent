@@ -122,11 +122,21 @@ Within ~30 seconds the rogue agent pumps ETH past the 40% cap, Jaga trims it bac
 - **Symbols are whitelisted.** Asset names are the only free text that could reach the LLM analyst or the UI from an MCP server; anything that isn't a ticker is dropped at the parser.
 - **Paper mode respects the exchange.** Rate-limit backoff on 429/418, WebSocket staleness fallback to REST, real min-notional filters.
 
+## Where this goes next
+
+The hackathon build guards a spot subaccount through one MCP server. The next three steps, in order:
+
+1. **Ship it as a Binance Skill.** Jaga already speaks MCP both ways; packaging the guard as a skill in the Skills Hub lets any Agent OS user point it at their own Agentic subaccount without cloning a repo.
+2. **Futures and margin.** The engine is quote-denominated and position-agnostic; liquidation distance and funding cost are two more rules and one more valuation path, not a rewrite.
+3. **Multi-account watch.** One Jaga process, many subaccounts, one dashboard — the state is already per-account and the audit trail is already chained.
+
+**Who pays for it.** Nobody, today: it is MIT-licensed and runs on your own machine against your own subaccount, and the guard loop costs nothing but an MCP call every few seconds. The commercial shape, if there is one, is the boring part of risk software — a hosted guard for desks running several agent subaccounts, priced per watched account, with the audit trail as the artifact compliance actually wants. The engine stays open source either way; a risk rule you cannot read is a risk rule you cannot trust.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `engine.mjs` | pure risk engine — 6 rules, no I/O, no LLM |
+| `engine.mjs` | pure risk engine — 8 rules, no I/O, no LLM |
 | `jaga.mjs` | orchestrator: MCP client + MCP server, executor, hash-chained audit, alerts, AI analyst |
 | `shapes.mjs` | response-shape normalizers, symbol whitelist, bridged valuation, config validation |
 | `dashboard.mjs` | zero-dependency live dashboard (HTTP + SSE + `/mcp`) |

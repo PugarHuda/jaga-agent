@@ -45,6 +45,7 @@ const PAGE = /* html */ `<!doctype html>
   <div class="card"><div class="k">Mode</div><div class="v" id="mode">—</div></div>
   <div class="card"><div class="k">Interventions</div><div class="v" id="acts">0</div></div>
   <div class="card"><div class="k">Damage avoided</div><div class="v" id="saved">—</div></div>
+  <div class="card"><div class="k">Threat (AI analyst)</div><div class="v" id="threat">—</div></div>
 </div>
 <div class="card" id="pendingCard" style="display:none;margin-bottom:16px;border-color:var(--amber)">
   <h2 style="margin-top:0">⏳ Pending approvals (mode: propose)</h2>
@@ -89,6 +90,7 @@ function removePending(id){
   document.querySelectorAll('#pending [data-id="'+CSS.escape(id)+'"]').forEach(e=>e.remove());
   if(!$("pending").children.length)$("pendingCard").style.display="none";
 }
+function threat(level){const c={LOW:"var(--green)",MEDIUM:"var(--amber)",HIGH:"var(--red)",CRITICAL:"var(--red)"};$("threat").textContent=level;$("threat").style.color=c[level]||"var(--txt)"}
 function feed(ev){
   // MCP/LLM text is untrusted → textContent only, never innerHTML
   const d=document.createElement("div");d.className="ev "+ev.type;
@@ -122,7 +124,7 @@ function tick(ev){
 // server injects current state at serve time — first paint is already live
 const BOOT=__BOOT__;
 series=BOOT.series;acts=BOOT.actions;$("acts").textContent=acts;draw();
-BOOT.events.forEach(feed);BOOT.pending.forEach(renderPending);if(BOOT.lastTick)tick(BOOT.lastTick);
+BOOT.events.forEach(feed);const lastAdv=BOOT.events.find(e=>e.type==="advisor"&&e.level);if(lastAdv)threat(lastAdv.level);BOOT.pending.forEach(renderPending);if(BOOT.lastTick)tick(BOOT.lastTick);
 let dropped=false;const es=new EventSource("/events");
 es.onopen=()=>{$("dot").style.color="var(--green)";if(dropped)location.reload()};
 es.onerror=()=>{$("dot").style.color="var(--dim)";dropped=true};
@@ -132,11 +134,12 @@ es.onmessage=m=>{
   if(ev.type==="decision")return removePending(ev.id);
   if(ev.type==="proposal")renderPending(ev);
   if(ev.type==="action"){acts++;$("acts").textContent=acts}
+  if(ev.type==="advisor"&&ev.level)threat(ev.level);
   feed(ev);
 };
 </script></body></html>`;
 
-export function startDashboard(port, { onDecision, onPanic, metrics, mcp: mcpHandler } = {}) {
+export function startDashboard(port, { onDecision, onPanic, metrics, health, mcp: mcpHandler } = {}) {
   const clients = new Set();
   const store = { series: [], events: [], actions: 0, lastTick: null, pending: [] };
   const broadcast = (ev) => {
@@ -176,6 +179,10 @@ export function startDashboard(port, { onDecision, onPanic, metrics, mcp: mcpHan
           res.writeHead(400).end();
         }
       });
+    } else if (req.url === "/healthz" && health) {
+      const h = health();
+      res.writeHead(h.ok ? 200 : 503, { "content-type": "application/json" });
+      res.end(JSON.stringify(h));
     } else if (req.url === "/metrics" && metrics) {
       res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
       res.end(metrics());
@@ -204,6 +211,9 @@ export function startDashboard(port, { onDecision, onPanic, metrics, mcp: mcpHan
   const heartbeat = setInterval(() => clients.forEach((c) => c.write(":hb\n\n")), 15000);
 
   return {
+    seed(series) {
+      store.series = series.slice(-300);
+    },
     emit(ev) {
       ev.ts = Date.now();
       if (ev.type === "tick") {

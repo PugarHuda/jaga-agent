@@ -5,7 +5,7 @@
     "_auth": "official server uses OAuth: authenticate once via Claude Code (/mcp), then run Jaga with MCP_BEARER_TOKEN=<access_token>. Run `node jaga.mjs --config config.json --list-tools` to see real tool names, then fill tools.* below.",
     "_or_stdio": { "command": "npx", "args": ["-y", "your-binance-mcp"], "env": { "BINANCE_API_KEY": "...", "BINANCE_API_SECRET": "..." } }
   },
-  "tools": { "account": "binance_get_account", "prices": "binance_get_ticker", "order": "binance_create_order" },
+  "tools": { "account": "binance_get_account", "prices": "binance_get_ticker", "order": "binance_create_order", "symbolInfo": "binance_exchange_info (optional: enables LOT_SIZE-exact quantity sells)" },
   "intervalSec": 30,
   "dashboard": { "port": 7777 },
   "advisor": { "everyTicks": 20 },
@@ -25,6 +25,9 @@
     "takeProfitPct": 15,
     "minTradeUsd": 10,
     "volatility": { "window": 10, "dropPct": 6 },
+    "maxExposurePct": 80,
+    "maxDailyLossPct": 5,
+    "assets": { "BTC": { "stopLossPct": 10 } },
     "mode": "propose"
   }
 }

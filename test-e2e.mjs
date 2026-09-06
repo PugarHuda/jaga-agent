@@ -24,6 +24,20 @@ cfg.rules.mode = "propose";
 cfg.intervalSec = 1;
 cfg.dashboard.port = PORT;
 cfg.advisor = { everyTicks: 0 };
+
+// a real HTTP receiver for webhook alerts — the alert path is verified end to end
+import http from "node:http";
+const alerts = [];
+const hook = http.createServer((req, res) => {
+  let b = "";
+  req.on("data", (c) => (b += c));
+  req.on("end", () => {
+    alerts.push(JSON.parse(b));
+    res.writeHead(204).end();
+  });
+});
+await new Promise((r) => hook.listen(0, "127.0.0.1", r));
+cfg.alerts = { webhook: `http://127.0.0.1:${hook.address().port}/hook` };
 fs.writeFileSync(cfgPath, JSON.stringify(cfg));
 
 let checks = 0;
@@ -32,10 +46,14 @@ const ok = (c, m) => {
   checks++;
 };
 
-const jaga = spawn(process.execPath, ["jaga.mjs", "--config", cfgPath, "--state", statePath, "--audit", auditPath], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, OPENROUTER_API_KEY: "", LLM_API_KEY: "", VENICE_API_KEY: "" } });
 let out = "";
-jaga.stdout.on("data", (d) => (out += d));
-jaga.stderr.on("data", (d) => (out += d));
+const spawnJaga = () => {
+  const p = spawn(process.execPath, ["jaga.mjs", "--config", cfgPath, "--state", statePath, "--audit", auditPath], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, OPENROUTER_API_KEY: "", LLM_API_KEY: "", VENICE_API_KEY: "" } });
+  p.stdout.on("data", (d) => (out += d));
+  p.stderr.on("data", (d) => (out += d));
+  return p;
+};
+let jaga = spawnJaga();
 
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined });
 try {
@@ -92,6 +110,14 @@ try {
   await evil.setContent(`<script>window.r = fetch("http://localhost:${PORT}/decide",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(r=>r.status).catch(()=>"blocked")</script>`);
   ok(["blocked", 403].includes(await evil.evaluate(() => window.r)), "cross-origin approval blocked (CORS/403)");
 
+  // the webhook alert for the approved intervention reached a real HTTP receiver
+  for (let i = 0; i < 50 && !alerts.length; i++) await new Promise((r) => setTimeout(r, 200));
+  ok(alerts.some((a) => /Jaga intervention/.test(a.content) && /max-position/.test(a.text)), "webhook alert delivered with the incident report");
+
+  // health endpoint
+  const health = await page.evaluate(() => fetch("/healthz").then((r) => r.json()));
+  ok(health.ok === true && health.lastTickAgeSec <= 3 && health.mode === "propose" && health.interventions >= 1, "/healthz reports a live, ticking guard");
+
   // Prometheus metrics reflect live state
   const metrics = await page.evaluate(() => fetch("/metrics").then((r) => r.text()));
   ok(/^jaga_portfolio_total \d/m.test(metrics) && /jaga_interventions_total 1\b/.test(metrics), "/metrics exposes portfolio + intervention counters");
@@ -125,7 +151,25 @@ try {
   ok(status.mode === "propose" && typeof status.total === "number" && Array.isArray(status.positions), "risk_status over MCP");
   const tail = (await mcp.callTool({ name: "audit_tail", arguments: { n: 5 } })).structuredContent.items;
   ok(tail.length === 5 && tail.every((e) => e.hash && "prev" in e), "audit_tail over MCP is hash-chained");
+  const resources = (await mcp.listResources()).resources.map((r) => r.uri);
+  ok(resources.includes("jaga://audit"), "audit trail published as an MCP resource");
+  const res = await mcp.readResource({ uri: "jaga://audit" });
+  ok(res.contents[0].text.split("\n").every((l) => JSON.parse(l).hash), "resource body is the JSONL chain");
   await mcp.close();
+
+  // restart resilience: kill Jaga, bring it back on the same port → the open dashboard
+  // reconnects, reloads, and the equity curve is replayed from the audit trail
+  const seriesBefore = await page.evaluate(() => series.length);
+  jaga.kill();
+  await new Promise((r) => setTimeout(r, 1500));
+  const navigated = page.waitForNavigation({ timeout: 30000 });
+  jaga = spawnJaga();
+  await navigated;
+  await page.waitForFunction(() => document.getElementById("total").textContent.includes("USDC"), null, { timeout: 15000 });
+  ok(await page.evaluate(() => series.length) >= Math.min(seriesBefore, 5), "equity curve survived the restart (replayed from audit)");
+  const starts = fs.readFileSync(auditPath, "utf8").split("\n").filter((l) => l.includes('"type":"start"')).length;
+  ok(starts === 2, "both process starts recorded in the audit chain");
+  ok((await page.evaluate(() => document.getElementById("dot").style.color)) === "var(--green)", "SSE reconnected after restart");
 
   // audit trail on disk verifies end to end
   const v = verifyAudit(auditPath);
@@ -140,5 +184,6 @@ try {
 } finally {
   await browser.close();
   jaga.kill();
+  hook.close();
   fs.rmSync(dir, { recursive: true, force: true });
 }

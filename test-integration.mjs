@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig } from "./shapes.mjs";
+import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel } from "./shapes.mjs";
 import { verifyAudit } from "./audit-verify.mjs";
 
 let checks = 0;
@@ -55,6 +55,16 @@ ok(Math.abs(snap.unpriced[0].usd - 40 / 1.0005) < 1e-6, "USDT valued at 1/USDCUS
 ok(Math.abs(snap.unpriced[1].usd - (2 * 20) / 1.0005) < 1e-6, "LINK valued via LINKUSDT × USDT→USDC");
 ok(Math.abs(snap.total - (100 + 250 + 40 / 1.0005 + 40 / 1.0005)) < 1e-6, "total includes bridged assets (concentration % stays honest)");
 ok(snap.priceOf("ETH") === 2500 && snap.priceOf("USDT") === 0, "priceOf only answers for tradable pairs");
+
+// --- exchange filters → LOT_SIZE-exact quantities ------------------------------
+eq(parseStepSizes({ symbols: [{ symbol: "ETHUSDC", filters: [{ filterType: "LOT_SIZE", stepSize: "0.00010000" }] }] }), { ETHUSDC: 0.0001 }, "exchangeInfo shape");
+eq(parseStepSizes({ btcusdc: 0.00001 }), { BTCUSDC: 0.00001 }, "plain map");
+eq(parseStepSizes([{ symbol: "SOLUSDC", stepSize: "0.01" }]), { SOLUSDC: 0.01 }, "array shape");
+ok(floorToStep(0.123456789, 0.0001) === 0.1234, "floors to step");
+ok(floorToStep(0.0003, 0.0001) === 0.0003 && floorToStep(1.5, 0.5) === 1.5, "exact multiples untouched (no float drift)");
+ok(floorToStep(0.00009, 0.0001) === 0, "below one step → 0");
+eq(parseThreatLevel("LEVEL: MEDIUM\nBiggest exposure…"), "MEDIUM", "threat level parsed");
+eq(parseThreatLevel("nothing here"), null, "no level → null");
 
 // --- config validation: a missing rule must fail loud, not silently never fire
 const good = JSON.parse(fs.readFileSync("config.demo.json", "utf8"));
@@ -130,6 +140,18 @@ try {
   ok(tiny.status === "REJECTED" && /min notional/.test(tiny.reason), "exchange min-notional filter enforced");
   const unknown = toolResult(await a.callTool({ name: "place_order", arguments: { symbol: "DOGEUSDC", side: "BUY", type: "MARKET", quoteOrderQty: 20 } }));
   ok(unknown.status === "REJECTED", "unknown symbol rejected");
+
+  // quantity-sized sells obey the real LOT_SIZE filter, exactly like Binance
+  const steps = parseStepSizes(toolResult(await a.callTool({ name: "get_symbol_info", arguments: {} })));
+  ok(steps.ETHUSDC > 0 && steps.BTCUSDC > 0, "get_symbol_info exposes real LOT_SIZE steps");
+  const ethNow = parseBalances(toolResult(await a.callTool({ name: "get_account", arguments: {} }))).find((x) => x.asset === "ETH").free;
+  const badQty = toolResult(await a.callTool({ name: "place_order", arguments: { symbol: "ETHUSDC", side: "SELL", type: "MARKET", quantity: steps.ETHUSDC * 10.5 } }));
+  ok(badQty.status === "REJECTED" && /LOT_SIZE/.test(badQty.reason), "off-step quantity rejected with Binance's LOT_SIZE reason");
+  const exact = floorToStep(ethNow, steps.ETHUSDC);
+  const qtySell = toolResult(await a.callTool({ name: "place_order", arguments: { symbol: "ETHUSDC", side: "SELL", type: "MARKET", quantity: exact } }));
+  ok(qtySell.status === "FILLED" && Math.abs(qtySell.executedQty - exact) < 1e-12, "floored full quantity fills exactly (no over-ask)");
+  const ethLeft = parseBalances(toolResult(await a.callTool({ name: "get_account", arguments: {} }))).find((x) => x.asset === "ETH")?.free ?? 0;
+  ok(ethLeft < steps.ETHUSDC, "only sub-step dust remains after a quantity full sell");
   await a.close();
   await b.close();
 } finally {

@@ -49,14 +49,14 @@ server.tool("get_prices", "Spot prices for all pairs", async () => {
 server.tool(
   "place_order",
   "Place a spot order",
-  { symbol: z.string(), side: z.string(), type: z.string(), quoteOrderQty: z.number() },
-  async ({ symbol, side, quoteOrderQty }) => {
+  { symbol: z.string(), side: z.string(), type: z.string(), quoteOrderQty: z.number().optional(), quantity: z.number().optional() },
+  async ({ symbol, side, quoteOrderQty, quantity }) => {
     const asset = symbol.replace("USDC", "");
     const price = prices[symbol];
     const bal = account.balances.find((b) => b.asset === asset);
     const usdc = account.balances.find((b) => b.asset === "USDC");
     if (side === "SELL" && bal && price) {
-      const qty = Math.min(bal.free, quoteOrderQty / price);
+      const qty = Math.min(bal.free, quantity ?? quoteOrderQty / price);
       bal.free -= qty;
       usdc.free += qty * price;
       return json({ status: "FILLED", symbol, side, executedQty: qty });

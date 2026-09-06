@@ -101,4 +101,28 @@ r = evaluate(snap([pos("BTC", 92000, 92), pos("ETH", 3680, 368)], 500), perAsset
 ok(!r.violations.some((v) => v.rule === "stop-loss" && v.asset === "BTC"), "BTC override holds at -8%");
 ok(r.violations.some((v) => v.rule === "stop-loss" && v.asset === "ETH"), "ETH default 5% stop still fires");
 
+// 13. Full sells carry the base quantity; trims don't
+r = evaluate(snap([pos("BTC", 94000, 94)], 200), rules, { ...freshState(), entries: { BTC: { entry: 100000, high: 100000, qty: 0.001 } } });
+ok(Math.abs(r.actions[0].qty - 0.001) < 1e-12 && r.actions[0].full, "stop-loss action carries qty for a quantity-sized order");
+r = evaluate(snap([pos("ETH", 4000, 800)], 200), rules, freshState());
+ok(r.actions[0].qty === undefined && !r.actions[0].full, "trim is quote-sized, no qty");
+
+// 14. Max exposure: 90% in crypto with an 80% cap → pro-rata trims totalling the excess
+const exp = { ...rules, maxExposurePct: 80, maxPositionPct: 100 };
+r = evaluate(snap([pos("BTC", 100000, 600), pos("ETH", 4000, 300)], 100), exp, freshState());
+ok(r.violations.some((v) => v.rule === "max-exposure"), "max-exposure fires at 90%");
+const trimmed = r.actions.reduce((a, x) => a + x.usd, 0);
+ok(Math.abs(trimmed - 100) < 0.02 && r.actions.every((a) => !a.full), "trims exactly the excess (100), pro-rata, partial");
+ok(Math.abs(r.actions.find((a) => a.symbol === "BTCUSDC").usd - 66.67) < 0.02, "BTC takes 2/3 of the trim");
+
+// 15. Daily loss: -6% since the UTC day start with a 5% cap → de-risk everything; a new day resets the baseline
+const daily = { ...rules, maxDailyLossPct: 5 };
+const t0 = Date.UTC(2026, 8, 6, 1, 0, 0);
+r = evaluate({ ...snap([pos("ETH", 4000, 400)], 600), ts: t0 }, daily, freshState()); // day start = 1000
+ok(r.state.day.date === "2026-09-06" && r.state.day.start === 1000, "day baseline recorded at first sight");
+r = evaluate({ ...snap([pos("ETH", 3760, 376)], 564), ts: t0 + 3600e3 }, daily, r.state); // total 940 = -6%
+ok(r.violations.some((v) => v.rule === "daily-loss") && r.actions[0].full, "daily-loss de-risks at -6% intraday");
+r = evaluate({ ...snap([pos("ETH", 3760, 376)], 564), ts: t0 + 24 * 3600e3 }, daily, { ...r.state, entries: { ETH: { entry: 3760, high: 3760, qty: 0.1 } } });
+ok(r.state.day.date === "2026-09-07" && r.state.day.start === 940 && !r.violations.some((v) => v.rule === "daily-loss"), "next UTC day resets the baseline");
+
 console.log(`✅ all ${checks} risk-engine checks passed`);

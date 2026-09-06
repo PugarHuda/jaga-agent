@@ -31,7 +31,8 @@ const account = {
   ],
 };
 const prices = {}; // symbol -> last price, kept live by the WebSocket
-const filters = {}; // symbol -> { minNotional }
+const filters = {}; // symbol -> { minNotional, stepSize, minQty }
+let exchangeInfo = { symbols: [] }; // raw Binance filters, served verbatim by get_symbol_info
 let priceSource = "rest";
 let lastWsAt = 0;
 const orders = [];
@@ -52,9 +53,11 @@ async function bootstrap() {
   const list = await get("/api/v3/ticker/price?symbols=" + encodeURIComponent(JSON.stringify(SYMBOLS)));
   for (const { symbol, price } of list) prices[symbol] = Number(price);
   const info = await get("/api/v3/exchangeInfo?symbols=" + encodeURIComponent(JSON.stringify(SYMBOLS)));
+  exchangeInfo = { symbols: info.symbols.map((s) => ({ symbol: s.symbol, baseAsset: s.baseAsset, quoteAsset: s.quoteAsset, filters: s.filters })) };
   for (const s of info.symbols) {
-    const f = s.filters.find((x) => x.filterType === "NOTIONAL");
-    filters[s.symbol] = { minNotional: Number(f?.minNotional ?? 5) };
+    const n = s.filters.find((x) => x.filterType === "NOTIONAL");
+    const l = s.filters.find((x) => x.filterType === "LOT_SIZE");
+    filters[s.symbol] = { minNotional: Number(n?.minNotional ?? 5), stepSize: Number(l?.stepSize ?? 0), minQty: Number(l?.minQty ?? 0) };
   }
 }
 
@@ -112,10 +115,18 @@ function bal(asset) {
   return b;
 }
 
-async function placeOrder({ symbol, side, quoteOrderQty }) {
+async function placeOrder({ symbol, side, quoteOrderQty, quantity }) {
   const asset = symbol.slice(0, -QUOTE.length);
   if (!SYMBOLS.includes(symbol)) return { status: "REJECTED", reason: `unknown symbol ${symbol}` };
-  const min = filters[symbol]?.minNotional ?? 5;
+  const f = filters[symbol] ?? { minNotional: 5, stepSize: 0, minQty: 0 };
+  if (quantity !== undefined) {
+    // Binance's LOT_SIZE filter: quantity must be a multiple of stepSize and >= minQty
+    const steps = f.stepSize ? quantity / f.stepSize : 0;
+    if (quantity < f.minQty || (f.stepSize && Math.abs(steps - Math.round(steps)) > 1e-6)) return { status: "REJECTED", reason: `Filter failure: LOT_SIZE (step ${f.stepSize}, min ${f.minQty})` };
+    quoteOrderQty = quantity * prices[symbol];
+  }
+  if (!(quoteOrderQty > 0)) return { status: "REJECTED", reason: "quoteOrderQty or quantity required" };
+  const min = f.minNotional;
   if (quoteOrderQty < min) return { status: "REJECTED", reason: `below exchange min notional ${min} ${QUOTE}` };
   const usdc = bal(QUOTE),
     a = bal(asset);
@@ -130,7 +141,8 @@ async function placeOrder({ symbol, side, quoteOrderQty }) {
     return o;
   }
   if (side === "SELL") {
-    const want = Math.min(a.free, quoteOrderQty / prices[symbol]);
+    const want = quantity !== undefined ? quantity : Math.min(a.free, quoteOrderQty / prices[symbol]);
+    if (quantity !== undefined && quantity > a.free + 1e-12) return { status: "REJECTED", reason: `insufficient ${asset} (have ${a.free})` };
     if (want <= 0) return { status: "REJECTED", reason: `no ${asset} to sell` };
     const f = await fillFromBook(symbol, "SELL", want * prices[symbol]);
     const qty = Math.min(want, f.qty);
@@ -157,14 +169,15 @@ function buildServer() {
   server.tool(
     "place_order",
     "Market order filled against the live Binance order book, taker fee applied, exchange min-notional enforced",
-    { symbol: z.string(), side: z.enum(["BUY", "SELL"]), type: z.string().optional(), quoteOrderQty: z.number().positive() },
+    { symbol: z.string(), side: z.enum(["BUY", "SELL"]), type: z.string().optional(), quoteOrderQty: z.number().positive().optional(), quantity: z.number().positive().optional() },
     async (o) => {
       const r = await placeOrder(o);
-      console.error(`${r.status === "FILLED" ? "📗" : "📕"} ${o.side} ${o.symbol} $${o.quoteOrderQty.toFixed(2)} → ${r.status}${r.fillPrice ? ` @ ${r.fillPrice.toFixed(2)} (slip ${r.slippagePct.toFixed(3)}%, fee ${r.fee.toFixed(6)} ${r.feeAsset})` : ` (${r.reason})`}`);
+      console.error(`${r.status === "FILLED" ? "📗" : "📕"} ${o.side} ${o.symbol} ${o.quantity !== undefined ? `qty ${o.quantity}` : `${o.quoteOrderQty.toFixed(2)}`} → ${r.status}${r.fillPrice ? ` @ ${r.fillPrice.toFixed(2)} (slip ${r.slippagePct.toFixed(3)}%, fee ${r.fee.toFixed(6)} ${r.feeAsset})` : ` (${r.reason})`}`);
       return json(r);
     }
   );
   server.tool("get_orders", "Every order filled on this paper wallet", async () => json(orders));
+  server.tool("get_symbol_info", "Real Binance exchange filters (LOT_SIZE, NOTIONAL…) for the paper symbols, verbatim from /api/v3/exchangeInfo", async () => json(exchangeInfo));
   return server;
 }
 

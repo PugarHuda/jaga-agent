@@ -3,8 +3,11 @@
 // snapshot: { positions: [{asset, qty, price, usd}], quote, quoteFree, total }
 // rules:    { quote, stopLossPct, trailingStopPct?, takeProfitPct?, maxPositionPct,
 //             maxDrawdownPct, minTradeUsd, volatility?: {window, dropPct}, mode,
-//             assets?: { BTC: { stopLossPct: 10, ... } }   ← per-asset overrides }
-// state:    { peak, entries: {ASSET: {entry, high, qty}}, history: {ASSET: [price,...]} }
+//             assets?: { BTC: { stopLossPct: 10, ... } },  ← per-asset overrides
+//             maxExposurePct?: 80,     ← cap on total non-quote exposure
+//             maxDailyLossPct?: 5 }    ← cap on loss since 00:00 UTC (prop-desk style)
+// state:    { peak, entries: {ASSET: {entry, high, qty}}, history: {ASSET: [price,...]},
+//             day: {date, start} }   ← equity at the start of the current UTC day
 //           entry is a running cost basis: when the position grows, the new lot is
 //           averaged in at its price; trims keep the basis.
 //
@@ -12,22 +15,25 @@
 // Jaga never buys, never withdraws, never widens exposure.
 
 export function freshState() {
-  return { peak: 0, entries: {}, history: {} };
+  return { peak: 0, entries: {}, history: {}, day: null };
 }
 
 export function evaluate(snapshot, rules, state) {
+  const today = new Date(snapshot.ts ?? Date.now()).toISOString().slice(0, 10);
   const s = {
     peak: Math.max(state.peak ?? 0, snapshot.total),
     entries: { ...state.entries },
     history: { ...state.history },
+    day: state.day?.date === today ? state.day : { date: today, start: snapshot.total }, // new UTC day → new baseline
   };
   const violations = [];
-  const sells = {}; // asset -> { usd, full }
+  const sells = {}; // asset -> { usd, full, qty }
   const window = rules.volatility?.window ?? 5;
+  const qtyOf = Object.fromEntries(snapshot.positions.map((p) => [p.asset, p.qty]));
 
   const addSell = (asset, usd, full) => {
     const cur = sells[asset] ?? { usd: 0, full: false };
-    sells[asset] = { usd: Math.max(cur.usd, usd), full: cur.full || full };
+    sells[asset] = { usd: Math.max(cur.usd, usd), full: cur.full || full, qty: qtyOf[asset] };
   };
 
   for (const p of snapshot.positions) {
@@ -111,10 +117,38 @@ export function evaluate(snapshot, rules, state) {
     }
   }
 
+  // 6a. total exposure cap: too much of the book in non-quote assets → trim each position pro-rata
+  const exposure = snapshot.positions.reduce((t, p) => t + p.usd, 0);
+  const exposurePct = snapshot.total > 0 ? (exposure / snapshot.total) * 100 : 0;
+  if (rules.maxExposurePct && exposurePct > rules.maxExposurePct) {
+    const excess = exposure - (snapshot.total * rules.maxExposurePct) / 100;
+    if (excess >= rules.minTradeUsd) {
+      violations.push({
+        rule: "max-exposure",
+        asset: "*",
+        severity: "medium",
+        detail: `${exposurePct.toFixed(1)}% of portfolio in non-${snapshot.quote} assets (limit ${rules.maxExposurePct}%) — trimming ${excess.toFixed(2)} pro-rata`,
+      });
+      for (const p of snapshot.positions) if (p.usd >= rules.minTradeUsd) addSell(p.asset, (excess * p.usd) / exposure, false);
+    }
+  }
+
+  // 6b. daily loss limit: down N% since the start of the UTC day → de-risk everything (prop-desk rule)
+  const sellable = snapshot.positions.some((p) => p.usd >= rules.minTradeUsd);
+  const dayLossPct = s.day.start > 0 ? ((s.day.start - snapshot.total) / s.day.start) * 100 : 0;
+  if (rules.maxDailyLossPct && dayLossPct >= rules.maxDailyLossPct && sellable) {
+    violations.push({
+      rule: "daily-loss",
+      asset: "*",
+      severity: "critical",
+      detail: `portfolio down ${dayLossPct.toFixed(1)}% since 00:00 UTC (start ${s.day.start.toFixed(2)}, limit ${rules.maxDailyLossPct}%) — de-risking everything for the day`,
+    });
+    for (const p of snapshot.positions) if (p.usd >= rules.minTradeUsd) addSell(p.asset, p.usd, true);
+  }
+
   // 6. portfolio-level max drawdown: de-risk everything
   // only fires while there's something left to sell — once we're fully in quote,
   // repeating "still down from peak" every tick is noise, not protection
-  const sellable = snapshot.positions.some((p) => p.usd >= rules.minTradeUsd);
   const ddPct = s.peak > 0 ? ((s.peak - snapshot.total) / s.peak) * 100 : 0;
   if (ddPct >= rules.maxDrawdownPct && sellable) {
     violations.push({
@@ -133,6 +167,7 @@ export function evaluate(snapshot, rules, state) {
       symbol: `${asset}${snapshot.quote}`,
       usd: Math.round(x.usd * 100) / 100,
       full: x.full,
+      ...(x.full && x.qty ? { qty: x.qty } : {}), // full sells carry the exact base quantity → sized as a quantity order, never over-asks
     }));
 
   // full liquidation resets the book for that asset so remainders/dust can't re-trigger

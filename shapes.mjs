@@ -68,7 +68,8 @@ export function validateConfig(cfg) {
     } else if (!(Number.isFinite(v) && v > 0)) errs.push(`rules.${k} must be a positive number`);
   };
   for (const k of ["stopLossPct", "maxPositionPct", "maxDrawdownPct", "minTradeUsd"]) positive(k, true);
-  for (const k of ["trailingStopPct", "takeProfitPct"]) positive(k, false);
+  for (const k of ["trailingStopPct", "takeProfitPct", "maxExposurePct", "maxDailyLossPct"]) positive(k, false);
+  if (r.assets !== undefined && (typeof r.assets !== "object" || r.assets === null)) errs.push("rules.assets must be an object of per-asset overrides");
   if (r.volatility !== undefined) {
     if (!(Number.isInteger(r.volatility?.window) && r.volatility.window >= 2)) errs.push("rules.volatility.window must be an integer >= 2");
     if (!(Number.isFinite(r.volatility?.dropPct) && r.volatility.dropPct > 0)) errs.push("rules.volatility.dropPct must be a positive number");
@@ -115,4 +116,38 @@ export function valueSnapshot(balances, prices, quote) {
   }
   const total = quoteFree + positions.reduce((s, p) => s + p.usd, 0) + unpriced.reduce((s, p) => s + p.usd, 0);
   return { positions, unpriced, quote, quoteFree, total, priceOf };
+}
+
+// Exchange filters → { SYMBOL: stepSize }. Understands Binance exchangeInfo
+// ({symbols:[{symbol, filters:[{filterType:"LOT_SIZE", stepSize}]}]}), a plain
+// {SYMBOL: step} map, or [{symbol, stepSize}].
+export function parseStepSizes(x) {
+  const out = {};
+  const src = x?.symbols ?? x?.data ?? x;
+  if (Array.isArray(src)) {
+    for (const it of src) {
+      const sym = it.symbol ?? it.pair;
+      const step = Number(it.stepSize ?? it.filters?.find((f) => f.filterType === "LOT_SIZE")?.stepSize);
+      if (sym && step > 0 && PAIR.test(String(sym).toUpperCase())) out[String(sym).toUpperCase()] = step;
+    }
+  } else if (src && typeof src === "object") {
+    for (const [k, v] of Object.entries(src)) {
+      const step = Number(typeof v === "object" && v !== null ? v.stepSize : v);
+      if (step > 0 && PAIR.test(k.toUpperCase())) out[k.toUpperCase()] = step;
+    }
+  }
+  return out;
+}
+
+// Floor a base quantity to the symbol's LOT_SIZE step (what Binance would otherwise reject).
+export function floorToStep(qty, step) {
+  if (!step || step <= 0) return qty;
+  const decimals = Math.max(0, Math.ceil(-Math.log10(step)));
+  return Number((Math.floor(qty / step + 1e-9) * step).toFixed(decimals));
+}
+
+// The analyst's threat assessment starts with a level; pull it out for the dashboard card.
+export function parseThreatLevel(text) {
+  const m = String(text ?? "").match(/\b(LOW|MEDIUM|HIGH|CRITICAL)\b/i);
+  return m ? m[1].toUpperCase() : null;
 }

@@ -6,7 +6,8 @@
   "tools": {
     "account": "get_account",
     "prices": "get_prices",
-    "order": "place_order"
+    "order": "place_order",
+    "symbolInfo": "get_symbol_info"
   },
   "intervalSec": 5,
   "dashboard": {
@@ -27,6 +28,7 @@
       "window": 6,
       "dropPct": 1
     },
-    "mode": "execute"
+    "mode": "execute",
+    "maxExposurePct": 90
   }
 }

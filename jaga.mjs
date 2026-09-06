@@ -14,7 +14,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { evaluate, freshState } from "./engine.mjs";
 import { startDashboard } from "./dashboard.mjs";
-import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig } from "./shapes.mjs";
+import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel } from "./shapes.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -66,6 +66,21 @@ async function connectMcp(cfg) {
     : new StdioClientTransport({ command: cfg.mcp.command, args: cfg.mcp.args ?? [], env: { ...process.env, ...cfg.mcp.env } });
   await client.connect(transport);
   return client;
+}
+
+// Optional: a tool that returns exchange filters (Binance exchangeInfo shape or a
+// {SYMBOL: stepSize} map). With it, full sells are sized as exact base quantities
+// floored to LOT_SIZE — the order Binance actually accepts. Without it, quote-sized.
+async function loadStepSizes(mcp, cfg) {
+  if (!cfg.tools.symbolInfo) return {};
+  try {
+    const steps = parseStepSizes(toolResult(await mcp.callTool({ name: cfg.tools.symbolInfo, arguments: cfg.tools.args?.symbolInfo ?? {} })));
+    console.log(`📐 LOT_SIZE steps loaded for ${Object.keys(steps).length} symbols`);
+    return steps;
+  } catch (e) {
+    console.error("symbolInfo unavailable, falling back to quote-sized orders:", e.message);
+    return {};
+  }
 }
 
 async function takeSnapshot(mcp, cfg) {
@@ -151,7 +166,7 @@ async function threatAssessment(cfg, snapshot, state, rules) {
   try {
     return await askLLM(
       cfg,
-      "You are Jaga's analyst. Given portfolio snapshot, price history and active risk rules, write a threat assessment: risk level (LOW/MEDIUM/HIGH), the single biggest exposure, and what rule is closest to tripping. Max 80 words, terse.",
+      "You are Jaga's analyst. Given portfolio snapshot, price history and active risk rules, write a threat assessment. First line exactly 'LEVEL: LOW' or 'LEVEL: MEDIUM' or 'LEVEL: HIGH'. Then the single biggest exposure and what rule is closest to tripping. Max 80 words, terse.",
       { snapshot, history: state.history, entries: state.entries, peak: state.peak, rules }
     );
   } catch (e) {
@@ -168,7 +183,10 @@ async function execute(ctx, a) {
     res = toolResult(
       await mcp.callTool({
         name: cfg.tools.order,
-        arguments: { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd },
+        arguments:
+          a.full && a.qty && ctx.steps[a.symbol]
+            ? { symbol: a.symbol, side: a.side, type: "MARKET", quantity: floorToStep(a.qty, ctx.steps[a.symbol]) } // exact, never over-asks
+            : { symbol: a.symbol, side: a.side, type: "MARKET", quoteOrderQty: a.usd },
       })
     );
   } catch (e) {
@@ -228,6 +246,38 @@ function metrics(ctx) {
   let out = lines.map(([n, t, v]) => `# TYPE ${n} ${t}\n${n} ${Number(v)}`).join("\n") + "\n";
   out += "# TYPE jaga_position_usd gauge\n" + (s?.positions ?? []).map((p) => `jaga_position_usd{asset="${p.asset}"} ${p.usd}`).join("\n") + "\n";
   return out;
+}
+
+// /healthz — for uptime monitors, k8s probes, or a glance
+function health(ctx) {
+  const age = ctx.lastTickAt ? (Date.now() - Date.parse(ctx.lastTickAt)) / 1000 : null;
+  const budget = (ctx.cfg.intervalSec ?? 10) * 3;
+  return {
+    ok: age !== null && age < budget,
+    uptimeSec: Math.round(process.uptime()),
+    lastTickAt: ctx.lastTickAt,
+    lastTickAgeSec: age === null ? null : Math.round(age),
+    ticks: ctx.ticks,
+    errors: ctx.errors,
+    interventions: ctx.interventions,
+    mode: ctx.cfg.rules.mode,
+    mcp: ctx.cfg.mcp.url ?? ctx.cfg.mcp.command,
+  };
+}
+
+// The equity curve survives restarts: replay the last ticks from the audit trail.
+function replayEquity(dash) {
+  try {
+    const series = fs
+      .readFileSync(AUDIT_PATH, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.type === "tick")
+      .slice(-300)
+      .map((e) => e.total);
+    if (series.length) dash.seed(series);
+  } catch {}
 }
 
 // Hot reload: edit config.json while Jaga runs → new thresholds apply on the next
@@ -318,6 +368,13 @@ function jagaMcpHandler(ctx) {
       } catch {}
       return json(lines);
     });
+    server.resource("audit-trail", "jaga://audit", { description: "Hash-chained audit trail (JSONL, last 200 entries)", mimeType: "application/x-ndjson" }, async (uri) => {
+      let text = "";
+      try {
+        text = fs.readFileSync(AUDIT_PATH, "utf8").trim().split("\n").slice(-200).join("\n");
+      } catch {}
+      return { contents: [{ uri: uri.href, mimeType: "application/x-ndjson", text }] };
+    });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); // stateless: one server per request
     res.on("close", () => {
       transport.close();
@@ -332,6 +389,7 @@ function jagaMcpHandler(ctx) {
 async function tick(ctx) {
   const { mcp, cfg, dash } = ctx;
   const snapshot = await takeSnapshot(mcp, cfg);
+  snapshot.ts = Date.now();
   const { violations, actions, state } = evaluate(snapshot, cfg.rules, ctx.state);
   ctx.state = state;
   ctx.ticks++;
@@ -379,9 +437,10 @@ async function tick(ctx) {
   } else if (cfg.advisor?.everyTicks && ctx.ticks % cfg.advisor.everyTicks === 0) {
     void threatAssessment(cfg, snapshot, state, cfg.rules).then((assessment) => {
       if (!assessment) return;
+      const level = parseThreatLevel(assessment);
       console.log("🔭 threat assessment:\n" + assessment + "\n");
-      audit({ type: "advisor", assessment });
-      dash?.emit({ type: "advisor", rule: "🔭 advisor", text: assessment });
+      audit({ type: "advisor", level, assessment });
+      dash?.emit({ type: "advisor", rule: "🔭 advisor", level, text: assessment });
     });
   }
 
@@ -408,6 +467,7 @@ async function main() {
     ticks: 0,
     interventions: 0,
     errors: 0,
+    steps: {},
     last: null,
     lastViolations: [],
     lastTickAt: null,
@@ -419,12 +479,28 @@ async function main() {
         onDecision: (id, approve) => onDecision(ctx, id, approve),
         onPanic: () => panic(ctx),
         metrics: () => metrics(ctx),
+        health: () => health(ctx),
         mcp: jagaMcpHandler(ctx),
       })
     : null;
+  if (ctx.dash) replayEquity(ctx.dash);
   watchConfig(ctx);
+  audit({ type: "start", mode: cfg.rules.mode, mcp: cfg.mcp.url ?? cfg.mcp.command });
+  const shutdown = async (sig) => {
+    console.log(`\n⏹  ${sig}: shutting down cleanly`);
+    audit({ type: "shutdown", signal: sig, ticks: ctx.ticks, interventions: ctx.interventions });
+    persist(ctx);
+    try {
+      ctx.dash?.close();
+      await ctx.mcp?.close();
+    } catch {}
+    process.exit(0);
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
   console.log(`Jaga 🛡️  guarding via MCP (${cfg.mcp.url ?? cfg.mcp.command}) — mode=${cfg.rules.mode}`);
   ctx.mcp = await connectMcp(cfg);
+  ctx.steps = await loadStepSizes(ctx.mcp, cfg);
   if (flag("--list-tools")) {
     // discover real tool names + schemas so config.tools can be mapped without guessing
     for (const t of (await ctx.mcp.listTools()).tools) console.log(`\n## ${t.name}\n${t.description ?? ""}\n${JSON.stringify(t.inputSchema)}`);

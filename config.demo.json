@@ -1,9 +1,23 @@
 {
-  "mcp": { "command": "node", "args": ["mock-mcp.mjs", "--rogue"] },
-  "tools": { "account": "get_account", "prices": "get_prices", "order": "place_order" },
+  "mcp": {
+    "command": "node",
+    "args": [
+      "mock-mcp.mjs",
+      "--rogue"
+    ]
+  },
+  "tools": {
+    "account": "get_account",
+    "prices": "get_prices",
+    "order": "place_order"
+  },
   "intervalSec": 3,
-  "dashboard": { "port": 7777 },
-  "advisor": { "everyTicks": 8 },
+  "dashboard": {
+    "port": 7777
+  },
+  "advisor": {
+    "everyTicks": 8
+  },
   "rules": {
     "quote": "USDC",
     "maxPositionPct": 40,
@@ -12,7 +26,11 @@
     "trailingStopPct": 4,
     "takeProfitPct": 10,
     "minTradeUsd": 10,
-    "volatility": { "window": 5, "dropPct": 5 },
-    "mode": "execute"
+    "volatility": {
+      "window": 5,
+      "dropPct": 5
+    },
+    "mode": "execute",
+    "maxDailyLossPct": 10
   }
 }

@@ -15,6 +15,7 @@ const PAGE = /* html */ `<!doctype html>
   .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
   .card .v{font-size:22px;margin-top:4px;font-variant-numeric:tabular-nums}
   .row{display:grid;grid-template-columns:1.2fr 1fr;gap:12px}
+  .row>.card{min-width:0}
   @media(max-width:900px){.row{grid-template-columns:1fr}}
   canvas{width:100%;height:180px}
   table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
@@ -33,7 +34,7 @@ const PAGE = /* html */ `<!doctype html>
   .up{color:var(--green)} .down{color:var(--red)}
   h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
 </style></head><body>
-<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:12px">
 <div><h1>Jaga 🛡️ <span id="dot" style="color:var(--green)">●</span> live</h1>
 <div class="sub">deterministic risk guardian · Binance Agent OS (MCP) · code enforces, AI explains</div></div>
 <button id="panic" title="Sell every position to the quote asset now, regardless of mode" style="padding:8px 14px;border-radius:8px;border:1px solid var(--red);background:#2a1215;color:var(--red);cursor:pointer;font:inherit;font-weight:700">🚨 De-risk everything</button>
@@ -53,7 +54,7 @@ const PAGE = /* html */ `<!doctype html>
 </div>
 <div class="row">
   <div class="card"><h2>Equity curve</h2><canvas id="chart" width="800" height="180"></canvas>
-    <h2>Positions</h2><table id="pos"><tr><th>Asset</th><th>Qty</th><th>Price</th><th>Value</th><th>% Port</th></tr></table>
+    <h2>Positions</h2><div style="overflow-x:auto"><table id="pos"><tr><th>Asset</th><th>Qty</th><th>Price</th><th>vs entry</th><th>Value</th><th>% Port</th></tr></table></div>
   </div>
   <div class="card"><h2>Incident feed</h2><div id="feed"></div></div>
 </div>
@@ -115,11 +116,13 @@ function tick(ev){
   const tr=(cells,th)=>{const r=document.createElement("tr");
     for(const c of cells){const e=document.createElement(th?"th":"td");e.textContent=c;r.append(e)}
     tbl.append(r);return r};
-  tr(["Asset","Qty","Price","Value","% Port"],true);
+  tr(["Asset","Qty","Price","vs entry","Value","% Port"],true);
   const cap=ev.limits?.maxPositionPct;
-  for(const p of ev.positions){const pct=p.usd/ev.total*100;const r=tr([p.asset,p.qty.toFixed(6),fmt(p.price),fmt(p.usd),pct.toFixed(1)+"%"+(cap?" / "+cap+"%":"")]);if(cap&&pct>cap)r.lastChild.className="down"}
-  for(const p of ev.unpriced??[])tr([p.asset+" (valued via bridge, not tradable)",p.qty.toFixed(6),fmt(p.price),fmt(p.usd),(p.usd/ev.total*100).toFixed(1)+"%"]);
-  tr([ev.quote,"","",fmt(ev.quoteFree),(ev.quoteFree/ev.total*100).toFixed(1)+"%"]);
+  for(const p of ev.positions){const pct=p.usd/ev.total*100;const pnl=p.entry?(p.price-p.entry)/p.entry*100:null;
+    const r=tr([p.asset,p.qty.toFixed(6),fmt(p.price),pnl===null?"—":(pnl>=0?"+":"")+pnl.toFixed(2)+"%",fmt(p.usd),pct.toFixed(1)+"%"+(cap?" / "+cap+"%":"")]);
+    if(pnl!==null)r.children[3].className=pnl>=0?"up":"down";if(cap&&pct>cap)r.lastChild.className="down"}
+  for(const p of ev.unpriced??[])tr([p.asset+" (valued via bridge, not tradable)",p.qty.toFixed(6),fmt(p.price),"—",fmt(p.usd),(p.usd/ev.total*100).toFixed(1)+"%"]);
+  tr([ev.quote,"","","",fmt(ev.quoteFree),(ev.quoteFree/ev.total*100).toFixed(1)+"%"]);
 }
 // server injects current state at serve time — first paint is already live
 const BOOT=__BOOT__;

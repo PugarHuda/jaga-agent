@@ -50,11 +50,11 @@ Entries are a **running cost basis**: when a position grows (whoever bought it),
 
 **Around the engine:**
 
-- 📊 **Live dashboard** (`localhost:7777`) — equity curve, positions with their limits, drawdown vs. limit, and a real-time incident feed over SSE. Zero frontend dependencies.
+- 📊 **Live dashboard** (`localhost:7777`) — equity curve, positions with unrealized PnL vs cost basis and their limits, drawdown vs. limit, threat level, and a real-time incident feed over SSE. Zero frontend dependencies.
 - 💰 **Damage-avoided counter** — for every executed de-risk, Jaga tracks the counterfactual ("what would that position be worth if we'd kept holding?") and shows the running total of losses prevented.
 - 🙋 **Human-in-the-loop approvals** — in `propose` mode, orders don't execute: they appear on the dashboard as pending approvals with ✅/❌ buttons. One click executes through MCP; nothing trades without you. Loopback-only, origin-checked, JSON-only, unguessable IDs.
 - 🧾 **Tamper-evident audit trail** — every tick, violation, order, decision and report is appended to `audit.jsonl` as a **SHA-256 hash chain**. `npm run audit:verify` pinpoints any edited, deleted or reordered line.
-- 🔌 **Jaga is an MCP server too** — `http://127.0.0.1:7777/mcp` exposes tools `risk_status`, `pending_proposals`, `audit_tail` and the resource `jaga://audit` (read-only by design). `claude mcp add jaga --transport http http://127.0.0.1:7777/mcp` and ask Claude Code *"what does the guard see right now?"*. The agent that guards the agents is itself composable in Agent OS.
+- 🔌 **Jaga is an MCP server too** — `http://127.0.0.1:7777/mcp` exposes tools `risk_status`, `pending_proposals`, `audit_tail`, the resource `jaga://audit` and the prompt `incident_briefing` (read-only by design). `claude mcp add jaga --transport http http://127.0.0.1:7777/mcp` and ask Claude Code *"what does the guard see right now?"*. The agent that guards the agents is itself composable in Agent OS.
 - 🚨 **Panic button** — one click (with confirm) sells every position to quote *now*, regardless of mode. Deterministic, audited, no LLM. Also `POST /panic` for your own kill-switch automation.
 - ♻️ **Hot reload** — edit `config.json` while Jaga runs; new thresholds apply on the next tick. Invalid edits are rejected and the old rules stay.
 - 📈 **Prometheus metrics + health** — `GET /metrics` (portfolio, peak, drawdown, interventions, damage avoided, ticks, errors, per-asset exposure) and `GET /healthz` (200 while ticks are fresh, 503 otherwise) for uptime monitors and k8s probes.
@@ -70,17 +70,19 @@ npm install
 npm test          # 31 engine checks + 53 integration checks (live Binance book)
 npm run paper     # ⭐ REAL Binance market, simulated wallet, real rogue agent — http://localhost:7777
 npm run paper:llm # same, rogue agent driven by an LLM under prompt injection (needs an LLM key)
-npm run demo      # simulated crashing market for a deterministic, always-eventful run
+npm run demo      # REAL crash, replayed: Binance 1m history from Aug 4-5 2024 (ETH -20%), same stack
 npm run test:e2e  # Playwright drives the dashboard: approve/reject, CSRF, /mcp, audit chain
 ```
 
-**Paper mode is the real thing minus the money.** `paper.mjs` starts three processes on one wallet:
+**There is no mock anywhere.** `paper.mjs` starts three processes on one wallet:
 
 1. `paper-mcp.mjs --http 7788` — an MCP server over Streamable HTTP. Prices come from Binance's **WebSocket** miniTicker stream (`data-stream.binance.vision`, REST fallback), market orders are filled by **walking the live order book** (`/api/v3/depth`) with Binance's taker fee and the exchange's real min-notional filter. Any number of agents can connect and they all see the same balances.
 2. `rogue-agent.mjs` — the attacker, buying ETH through that server every 20 s.
 3. `jaga.mjs` — the guardian, over the same HTTP endpoint (the same transport the official Binance Agent OS server uses).
 
 Within ~30 seconds the rogue agent pumps ETH past the 40% cap, Jaga trims it back through MCP, the incident lands on the dashboard, the hash-chained audit log, and (with an LLM key) an AI incident report.
+
+**Demo mode is the same stack on real history.** `npm run demo` runs the paper server with `--replay 2024-08-04T20:00:00Z --step 15`: it loads Binance's actual 1-minute candles for the August 2024 crash (public `/api/v3/klines`, no key) and steps through them 15 minutes per tick. Real prices, deterministic, every rule fires — trailing stop, stop-loss, circuit breaker, drawdown — and the damage-avoided counter shows what holding through it would have cost. Replay any window you like.
 
 ## Run against real Binance Agent OS
 
@@ -96,6 +98,7 @@ Within ~30 seconds the rogue agent pumps ETH past the 40% cap, Jaga trims it bac
 - **The LLM never decides trades.** Rules are JSON, evaluation is a pure function, orders are deterministic, and the engine file imports no AI SDK — auditable at a glance.
 - **Propose-first default.** Human-in-the-loop until you explicitly opt out, mirroring Agent OS's own permission philosophy.
 - **MCP-native, server-agnostic.** Jaga is an MCP *client* with config-mapped tool names and shape-normalized responses: it works with the official Agent OS server, community Binance MCP servers, and the bundled paper server, unchanged. It is also an MCP *server*, so other agents can ask it questions.
+- **Nothing is simulated except the wallet balance.** Prices are Binance's (live stream or real history), fills walk Binance's real order book, filters are Binance's real filters, the attacker is a real MCP client, and every test suite runs against that.
 - **Sell-only by construction.** The executor can only emit SELL-to-quote orders; the blast radius of any bug is "too safe."
 - **No overlapping ticks.** The guard loop is sequential; a slow MCP or LLM call can never double-execute a sell. Three consecutive failures reconnect the MCP client.
 - **Only FILLED counts.** A rejected or expired order is surfaced as a failure and retried next tick — never counted as an intervention, never written to the ledger.
@@ -110,12 +113,11 @@ Within ~30 seconds the rogue agent pumps ETH past the 40% cap, Jaga trims it bac
 | `jaga.mjs` | orchestrator: MCP client + MCP server, executor, hash-chained audit, alerts, AI analyst |
 | `shapes.mjs` | response-shape normalizers, symbol whitelist, bridged valuation, config validation |
 | `dashboard.mjs` | zero-dependency live dashboard (HTTP + SSE + `/mcp`) |
-| `paper-mcp.mjs` | paper MCP server: WebSocket prices, order-book fills, real exchange filters incl. LOT_SIZE rejection, quantity or quote-sized orders (stdio or HTTP) |
+| `paper-mcp.mjs` | paper MCP server: WebSocket prices or historical replay, order-book fills, real exchange filters incl. LOT_SIZE rejection, quantity or quote-sized orders (stdio or HTTP) |
 | `rogue-agent.mjs` | the attacker: a real MCP client, scripted or LLM-driven under prompt injection |
-| `paper.mjs` | `npm run paper` launcher: server + rogue + Jaga on one wallet |
-| `mock-mcp.mjs` | simulated crashing market for `npm run demo` (deterministic video runs) |
+| `paper.mjs` | `npm run paper` / `npm run demo` launcher: server (live or replay) + rogue + Jaga on one wallet |
 | `audit-verify.mjs` | verifies the audit trail's SHA-256 chain |
-| `test.mjs` / `test-integration.mjs` / `test-e2e.mjs` | engine (31) / shapes, valuation, filters, config, audit, live paper server incl. LOT_SIZE (53) / Playwright dashboard: approvals, panic, hot reload, metrics, health, webhook alerts, CSRF, MCP tools + resources, restart reconnect (30) |
+| `test.mjs` / `test-integration.mjs` / `test-e2e.mjs` | engine (31) / shapes, valuation, filters, config, audit, live paper server incl. LOT_SIZE (53) / Playwright on the real replay stack: approvals, panic, hot reload, metrics, health, webhook alerts, CSRF, MCP tools + resources + prompts, restart reconnect (33) |
 | `.github/workflows/ci.yml` | CI: all three suites on every push |
 | `config.demo.json` / `config.paper.json` / `config.binance.example.json` | demo, paper & production configs |
 

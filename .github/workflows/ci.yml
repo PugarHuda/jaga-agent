@@ -8,6 +8,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - run: npm test               # engine + integration (hits the live Binance public book)
+      - run: npm test               # engine + integration (live Binance public book + history)
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e       # Playwright drives the real dashboard
+      - run: npm run test:e2e       # Playwright drives the real dashboard on a replayed real crash
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: e2e-dashboard, path: e2e-dashboard.png, if-no-files-found: ignore }

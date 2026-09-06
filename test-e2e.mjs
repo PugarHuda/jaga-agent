@@ -1,7 +1,8 @@
-// End-to-end dashboard QA with Playwright: boots Jaga in PROPOSE mode against the
-// mock market with a rogue agent, drives the real browser UI, and checks the
-// human-in-the-loop path: proposal appears → Approve executes through MCP →
-// Reject records a rejection → CSRF guard holds → /mcp answers other agents.
+// End-to-end QA with Playwright on the REAL stack: paper MCP server replaying real
+// Binance history (Aug 2024 crash), a real rogue MCP client, Jaga in PROPOSE mode.
+// Drives the browser UI and checks the human-in-the-loop path: proposal appears →
+// Approve executes through MCP → Reject records a rejection → panic, hot reload,
+// metrics, health, alerts, CSRF guard, /mcp tools+resources+prompts, restart.
 // Run: npm run test:e2e   (needs Chromium: `npx playwright install chromium`
 // or set CHROME_PATH to an existing Chrome/Chromium binary)
 import assert from "node:assert";
@@ -15,11 +16,13 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { verifyAudit } from "./audit-verify.mjs";
 
 const PORT = 7791;
+const MCP_PORT = 7792;
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jaga-e2e-"));
 const cfgPath = path.join(dir, "config.json");
 const statePath = path.join(dir, "state.json");
 const auditPath = path.join(dir, "audit.jsonl");
 const cfg = JSON.parse(fs.readFileSync("config.demo.json", "utf8"));
+cfg.mcp = { url: `http://127.0.0.1:${MCP_PORT}/mcp` };
 cfg.rules.mode = "propose";
 cfg.intervalSec = 1;
 cfg.dashboard.port = PORT;
@@ -45,6 +48,14 @@ const ok = (c, m) => {
   assert.ok(c, m);
   checks++;
 };
+
+// the real paper server in replay mode + the real rogue agent, both over HTTP MCP
+const paper = spawn(process.execPath, ["paper-mcp.mjs", "--http", String(MCP_PORT), "--replay", "2024-08-04T20:00:00Z", "--step", "10"], { stdio: ["ignore", "ignore", "pipe"] });
+let paperErr = "";
+paper.stderr.on("data", (d) => (paperErr += d));
+for (let i = 0; i < 150 && !/paper MCP/.test(paperErr); i++) await new Promise((r) => setTimeout(r, 200));
+if (!/paper MCP/.test(paperErr)) throw new Error("paper-mcp did not start: " + paperErr);
+const rogue = spawn(process.execPath, ["rogue-agent.mjs", "--url", `http://127.0.0.1:${MCP_PORT}/mcp`, "--every", "4"], { stdio: ["ignore", "ignore", "ignore"] });
 
 let out = "";
 const spawnJaga = () => {
@@ -73,6 +84,8 @@ try {
   await page.waitForFunction(() => document.getElementById("mode").textContent === "propose");
   ok(true, "mode card reflects config");
   ok((await page.locator("#dd").textContent()).includes("/ " + cfg.rules.maxDrawdownPct + "%"), "drawdown card shows the configured limit");
+  await page.waitForFunction(() => [...document.querySelectorAll("#pos td:nth-child(4)")].some((td) => /%$/.test(td.textContent)), null, { timeout: 10000 });
+  ok(true, "positions show unrealized PnL vs cost basis");
 
   // the rogue agent concentrates ETH → engine proposes a trim → dashboard shows Approve/Reject
   const approve = page.getByRole("button", { name: "✅ Approve" }).first();
@@ -137,12 +150,18 @@ try {
   const executedBeforePanic = (out.match(/EXECUTED/g) || []).length;
   await page.getByRole("button", { name: "🚨 De-risk everything" }).click();
   await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "🚨 panic"), null, { timeout: 10000 });
-  for (let i = 0; i < 50 && (out.match(/EXECUTED/g) || []).length === executedBeforePanic; i++) await new Promise((r) => setTimeout(r, 200));
-  ok((out.match(/EXECUTED/g) || []).length > executedBeforePanic && /PANIC: human-triggered/.test(out), "panic liquidated positions through MCP");
-  const auditNow = fs.readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  const panicIdx = auditNow.findIndex((e) => e.type === "panic");
-  const panicSells = auditNow.slice(panicIdx + 1).filter((e) => e.type === "action" && e.full && e.status === "FILLED");
-  ok(panicIdx > 0 && panicSells.length >= auditNow[panicIdx].positions.length, "audit shows one FILLED full sell per panic target");
+  // wait until the audit shows a FILLED full sell for every target the panic entry named
+  let panicEntry, panicSells = [];
+  for (let i = 0; i < 100; i++) {
+    const auditNow = fs.readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const idx = auditNow.findIndex((e) => e.type === "panic");
+    panicEntry = idx >= 0 ? auditNow[idx] : null;
+    panicSells = idx >= 0 ? auditNow.slice(idx + 1).filter((e) => e.type === "action" && e.full && e.status === "FILLED") : [];
+    if (panicEntry && panicSells.length >= panicEntry.positions.length) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  ok(/PANIC: human-triggered/.test(out) && (out.match(/EXECUTED/g) || []).length > executedBeforePanic, "panic liquidated positions through MCP");
+  ok(panicEntry && panicSells.length >= panicEntry.positions.length, `audit shows one FILLED full sell per panic target (${panicSells.length}/${panicEntry?.positions.length})`);
 
   // the guardian is itself an MCP server other agents can query
   const mcp = new Client({ name: "e2e", version: "1" });
@@ -155,7 +174,11 @@ try {
   ok(resources.includes("jaga://audit"), "audit trail published as an MCP resource");
   const res = await mcp.readResource({ uri: "jaga://audit" });
   ok(res.contents[0].text.split("\n").every((l) => JSON.parse(l).hash), "resource body is the JSONL chain");
+  ok((await mcp.listPrompts()).prompts.some((p) => p.name === "incident_briefing"), "incident_briefing prompt advertised");
+  const briefing = await mcp.getPrompt({ name: "incident_briefing", arguments: {} });
+  ok(/max-position/.test(briefing.messages[0].content.text) && /Mode: propose/.test(briefing.messages[0].content.text), "prompt carries the real recent incidents and mode");
   await mcp.close();
+  await page.screenshot({ path: "e2e-dashboard.png" });
 
   // restart resilience: kill Jaga, bring it back on the same port → the open dashboard
   // reconnects, reloads, and the equity curve is replayed from the audit trail
@@ -184,6 +207,8 @@ try {
 } finally {
   await browser.close();
   jaga.kill();
+  rogue.kill();
+  paper.kill();
   hook.close();
   fs.rmSync(dir, { recursive: true, force: true });
 }

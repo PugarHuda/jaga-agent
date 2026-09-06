@@ -1,36 +1,20 @@
 {
-  "mcp": {
-    "command": "node",
-    "args": [
-      "mock-mcp.mjs",
-      "--rogue"
-    ]
-  },
-  "tools": {
-    "account": "get_account",
-    "prices": "get_prices",
-    "order": "place_order"
-  },
+  "_comment": "Demo: REAL historical crash replayed from Binance 1m candles (Aug 4-5 2024, ETH -20%) via `npm run demo` (paper.mjs --replay). Same paper server + rogue agent as paper mode; only the price feed is history instead of the live stream. Thresholds tuned so every rule gets exercised in ~2 minutes.",
+  "mcp": { "url": "http://127.0.0.1:7788/mcp" },
+  "tools": { "account": "get_account", "prices": "get_prices", "order": "place_order", "symbolInfo": "get_symbol_info" },
   "intervalSec": 3,
-  "dashboard": {
-    "port": 7777
-  },
-  "advisor": {
-    "everyTicks": 8
-  },
+  "dashboard": { "port": 7777 },
+  "advisor": { "everyTicks": 8 },
   "rules": {
     "quote": "USDC",
     "maxPositionPct": 40,
     "maxDrawdownPct": 12,
+    "maxDailyLossPct": 10,
     "stopLossPct": 6,
     "trailingStopPct": 4,
-    "takeProfitPct": 10,
+    "takeProfitPct": 8,
     "minTradeUsd": 10,
-    "volatility": {
-      "window": 5,
-      "dropPct": 5
-    },
-    "mode": "execute",
-    "maxDailyLossPct": 10
+    "volatility": { "window": 6, "dropPct": 5 },
+    "mode": "execute"
   }
 }

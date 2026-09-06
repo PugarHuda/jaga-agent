@@ -5,10 +5,9 @@
   "type": "module",
   "main": "jaga.mjs",
   "scripts": {
-    "demo": "node jaga.mjs --config config.demo.json",
+    "demo": "node paper.mjs --replay 2024-08-04T20:00:00Z --step 15 --config config.demo.json",
     "paper": "node paper.mjs",
     "paper:llm": "node paper.mjs --llm",
-    "once": "node jaga.mjs --config config.demo.json --once",
     "start": "node jaga.mjs --config config.json",
     "test": "node test.mjs && node test-integration.mjs",
     "test:e2e": "node test-e2e.mjs",

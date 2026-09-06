@@ -368,6 +368,24 @@ function jagaMcpHandler(ctx) {
       } catch {}
       return json(lines);
     });
+    server.prompt("incident_briefing", "Brief the operator on Jaga's recent interventions and current exposure", async () => {
+      const st = ctx.last;
+      let recent = [];
+      try {
+        recent = fs.readFileSync(AUDIT_PATH, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => ["violation", "action", "panic", "decision"].includes(e.type)).slice(-15);
+      } catch {}
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are briefing the human operator of a crypto subaccount guarded by Jaga (deterministic risk rules; you only explain, never trade).\nMode: ${ctx.cfg.rules.mode}. Rules: ${JSON.stringify(ctx.cfg.rules)}.\nPortfolio now: ${JSON.stringify({ total: st?.total, quoteFree: st?.quoteFree, positions: st?.positions })}.\nRecent audit entries (oldest first): ${JSON.stringify(recent)}.\nIn under 150 words: what happened, what Jaga did, what is closest to tripping next, and one concrete recommendation.`,
+            },
+          },
+        ],
+      };
+    });
     server.resource("audit-trail", "jaga://audit", { description: "Hash-chained audit trail (JSONL, last 200 entries)", mimeType: "application/x-ndjson" }, async (uri) => {
       let text = "";
       try {
@@ -410,7 +428,7 @@ async function tick(ctx) {
     avoided,
     quote: snapshot.quote,
     quoteFree: snapshot.quoteFree,
-    positions: snapshot.positions,
+    positions: snapshot.positions.map((p) => ({ ...p, entry: state.entries[p.asset]?.entry ?? null })),
     unpriced: snapshot.unpriced,
     mode: cfg.rules.mode,
     limits: { maxDrawdownPct: cfg.rules.maxDrawdownPct, maxPositionPct: cfg.rules.maxPositionPct },

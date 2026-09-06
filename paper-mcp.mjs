@@ -2,6 +2,9 @@
 //   prices : Binance WebSocket miniTicker stream (data-stream.binance.vision), REST bootstrap
 //   fills  : walk the live order book (/api/v3/depth) → real slippage, Binance taker fee
 //   limits : real exchange filters (min notional) from /api/v3/exchangeInfo
+// Replay mode: --replay 2024-08-04T20:00:00Z [--step 15] [--hours 12] steps through
+// REAL historical 1-minute candles (/api/v3/klines) instead of the live stream —
+// a real crash, deterministic, no synthetic market anywhere.
 // No API keys, no real money, real market. Two transports:
 //   node paper-mcp.mjs              stdio (one client)
 //   node paper-mcp.mjs --http 7788  Streamable HTTP — many clients share ONE wallet,
@@ -15,6 +18,10 @@ import { z } from "zod";
 
 const args = process.argv.slice(2);
 const HTTP_PORT = args.includes("--http") ? Number(args[args.indexOf("--http") + 1] || 7788) : 0;
+const opt = (n, d) => (args.includes(n) ? args[args.indexOf(n) + 1] : d);
+const REPLAY_FROM = opt("--replay", null); // ISO timestamp → historical replay
+const REPLAY_STEP = Number(opt("--step", 15)); // minutes advanced per get_prices call
+const REPLAY_HOURS = Number(opt("--hours", 12));
 const REST = "https://data-api.binance.vision";
 const WS = "wss://data-stream.binance.vision/stream?streams=";
 const QUOTE = "USDC";
@@ -35,6 +42,7 @@ const filters = {}; // symbol -> { minNotional, stepSize, minQty }
 let exchangeInfo = { symbols: [] }; // raw Binance filters, served verbatim by get_symbol_info
 let priceSource = "rest";
 let lastWsAt = 0;
+const replay = { candles: {}, i: 0, n: 0, t: null }; // symbol -> [{t, close}], cursor
 const orders = [];
 
 const get = async (path, retried = false) => {
@@ -48,6 +56,27 @@ const get = async (path, retried = false) => {
   if (!res.ok) throw new Error(`binance.vision ${res.status} ${path}`);
   return res.json();
 };
+
+// Historical candles for every symbol, one request each (≤1000 × 1m), aligned by index.
+async function loadReplay() {
+  const start = Date.parse(REPLAY_FROM);
+  if (!Number.isFinite(start)) throw new Error(`--replay needs an ISO timestamp, got ${REPLAY_FROM}`);
+  const end = start + REPLAY_HOURS * 3600e3;
+  for (const sym of SYMBOLS) {
+    const k = await get(`/api/v3/klines?symbol=${sym}&interval=1m&startTime=${start}&endTime=${end}&limit=1000`);
+    replay.candles[sym] = k.map((c) => ({ t: c[0], close: Number(c[4]) }));
+  }
+  replay.n = Math.min(...Object.values(replay.candles).map((c) => c.length));
+  if (!replay.n) throw new Error("no candles in the replay window");
+  seekReplay(0);
+  console.error(`⏪ replaying ${replay.n} minutes of real Binance history from ${new Date(start).toISOString()} (${REPLAY_STEP} min per tick)`);
+}
+function seekReplay(i) {
+  replay.i = Math.min(i, replay.n - 1);
+  for (const sym of SYMBOLS) prices[sym] = replay.candles[sym][replay.i].close;
+  replay.t = new Date(replay.candles[SYMBOLS[0]][replay.i].t).toISOString();
+  priceSource = "replay";
+}
 
 async function bootstrap() {
   const list = await get("/api/v3/ticker/price?symbols=" + encodeURIComponent(JSON.stringify(SYMBOLS)));
@@ -83,6 +112,7 @@ function streamPrices() {
 }
 
 async function refreshIfStale() {
+  if (REPLAY_FROM) return seekReplay(replay.i + REPLAY_STEP); // advance history; holds at the last candle
   if (priceSource === "websocket" && Date.now() - lastWsAt > 15000) priceSource = "rest (websocket stale)";
   if (priceSource === "websocket") return;
   const list = await get("/api/v3/ticker/price?symbols=" + encodeURIComponent(JSON.stringify(SYMBOLS)));
@@ -91,6 +121,11 @@ async function refreshIfStale() {
 
 // walk the real book: a market order eats levels until the quote amount is spent
 async function fillFromBook(symbol, side, { quote = Infinity, base = Infinity }) {
+  if (REPLAY_FROM) {
+    const price = prices[symbol];
+    const qty = Math.min(quote / price, base);
+    return { qty, cost: qty * price, avgPrice: price, levels: 0, top: price };
+  }
   const book = await get(`/api/v3/depth?symbol=${symbol}&limit=100`);
   const levels = side === "BUY" ? book.asks : book.bids;
   let remQ = quote,
@@ -166,7 +201,7 @@ function buildServer() {
   server.tool("get_account", "Paper subaccount balances (shared by every connected agent)", async () => json(account));
   server.tool("get_prices", `LIVE Binance spot prices via ${priceSource} (data-stream/data-api.binance.vision)`, async () => {
     await refreshIfStale();
-    return json({ ...prices, _source: priceSource });
+    return json({ ...prices, _source: priceSource, ...(REPLAY_FROM ? { _replayTime: replay.t, _replayMinute: replay.i, _replayTotal: replay.n } : {}) });
   });
   server.tool(
     "place_order",
@@ -184,7 +219,8 @@ function buildServer() {
 }
 
 await bootstrap();
-streamPrices();
+if (REPLAY_FROM) await loadReplay();
+else streamPrices();
 
 if (HTTP_PORT) {
   const srv = http.createServer(async (req, res) => {

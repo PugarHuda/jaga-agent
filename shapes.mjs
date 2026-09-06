@@ -68,10 +68,12 @@ export function validateConfig(cfg) {
     } else if (!(Number.isFinite(v) && v > 0)) errs.push(`rules.${k} must be a positive number`);
   };
   for (const k of ["stopLossPct", "maxPositionPct", "maxDrawdownPct", "minTradeUsd"]) positive(k, true);
-  for (const k of ["trailingStopPct", "takeProfitPct", "maxExposurePct", "maxDailyLossPct"]) positive(k, false);
+  for (const k of ["trailingStopPct", "takeProfitPct", "maxExposurePct", "maxDailyLossPct", "maxTickJumpPct"]) positive(k, false);
   if (r.assets !== undefined && (typeof r.assets !== "object" || r.assets === null)) errs.push("rules.assets must be an object of per-asset overrides");
   if (r.volatility !== undefined) {
-    if (!(Number.isInteger(r.volatility?.window) && r.volatility.window >= 2)) errs.push("rules.volatility.window must be an integer >= 2");
+    if (r.volatility?.windowSec !== undefined) {
+      if (!(Number.isFinite(r.volatility.windowSec) && r.volatility.windowSec > 0)) errs.push("rules.volatility.windowSec must be a positive number of seconds");
+    } else if (!(Number.isInteger(r.volatility?.window) && r.volatility.window >= 2)) errs.push("rules.volatility.window must be an integer >= 2 (or set windowSec)");
     if (!(Number.isFinite(r.volatility?.dropPct) && r.volatility.dropPct > 0)) errs.push("rules.volatility.dropPct must be a positive number");
   }
   if (!["propose", "execute"].includes(r.mode)) errs.push('rules.mode must be "propose" or "execute"');
@@ -154,4 +156,26 @@ export function floorToStep(qty, step) {
 export function parseThreatLevel(text) {
   const m = String(text ?? "").match(/\b(LOW|MEDIUM|HIGH|CRITICAL)\b/i);
   return m ? m[1].toUpperCase() : null;
+}
+
+// Bad prints happen (a community MCP server returns 0, a stale cache, a fat-finger
+// tick). A price that jumps more than maxJumpPct from the last accepted one is
+// held back for ONE tick: we keep valuing at the previous price and flag it. If the
+// next tick confirms the level, it's real and we accept it. One glitch can never
+// liquidate a book.
+export function screenPrices(prev, now, suspect, maxJumpPct = 25) {
+  const out = { ...now };
+  const nextSuspect = new Set();
+  const flagged = [];
+  for (const [sym, p] of Object.entries(now)) {
+    const last = prev?.[sym];
+    if (!last) continue;
+    const jump = Math.abs((p - last) / last) * 100;
+    if (jump > maxJumpPct && !suspect?.has(sym)) {
+      out[sym] = last; // hold last good price this tick
+      nextSuspect.add(sym);
+      flagged.push({ symbol: sym, last, seen: p, jumpPct: Math.round(jump * 100) / 100 });
+    }
+  }
+  return { prices: out, suspect: nextSuspect, flagged };
 }

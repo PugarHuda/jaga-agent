@@ -6,7 +6,8 @@
 //             assets?: { BTC: { stopLossPct: 10, ... } },  ← per-asset overrides
 //             maxExposurePct?: 80,     ← cap on total non-quote exposure
 //             maxDailyLossPct?: 5 }    ← cap on loss since 00:00 UTC (prop-desk style)
-// state:    { peak, entries: {ASSET: {entry, high, qty}}, history: {ASSET: [price,...]},
+//           volatility.window counts ticks; volatility.windowSec measures seconds (tick-rate independent)
+// state:    { peak, entries: {ASSET: {entry, high, qty}}, history: {ASSET: [{p: price, t: ms},...]},
 //             day: {date, start},    ← equity at the start of the current UTC day
 //             lastQuote, lastPos: {ASSET: {qty, price}} }  ← to tell deposits/withdrawals from market moves
 //           entry is a running cost basis: when the position grows, the new lot is
@@ -80,7 +81,10 @@ export function evaluate(snapshot, rules, state) {
       const entry = grew ? (prev.entry * prev.qty + p.price * (p.qty - prev.qty)) / p.qty : prev.entry;
       s.entries[p.asset] = { entry, high: Math.max(prev.high, p.price, grew ? entry : 0), qty: p.qty };
     }
-    const hist = [...(s.history[p.asset] ?? []), p.price].slice(-window);
+    const now = snapshot.ts ?? Date.now();
+    const raw = (s.history[p.asset] ?? []).map((h) => (typeof h === "number" ? { p: h, t: now } : h)); // pre-2.2 state stored bare prices
+    const kept = R.volatility?.windowSec ? raw.filter((h) => now - h.t <= R.volatility.windowSec * 1000) : raw.slice(-(window - 1));
+    const hist = [...kept, { p: p.price, t: now }];
     s.history[p.asset] = hist;
 
     const { entry, high } = s.entries[p.asset];
@@ -140,14 +144,14 @@ export function evaluate(snapshot, rules, state) {
 
     // 5. volatility circuit breaker: flash-crash inside the rolling window
     if (R.volatility && hist.length >= 2) {
-      const windowDropPct = ((hist[0] - p.price) / hist[0]) * 100;
+      const windowDropPct = ((hist[0].p - p.price) / hist[0].p) * 100;
       gauge("circuit-breaker", p.asset, windowDropPct, R.volatility.dropPct);
       if (windowDropPct >= R.volatility.dropPct) {
         violations.push({
           rule: "circuit-breaker",
           asset: p.asset,
           severity: "high",
-          detail: `${p.asset} crashed ${windowDropPct.toFixed(1)}% within ${hist.length} ticks (limit ${R.volatility.dropPct}%)`,
+          detail: `${p.asset} crashed ${windowDropPct.toFixed(1)}% within ${R.volatility.windowSec ? `${Math.round((now - hist[0].t) / 1000)}s` : `${hist.length} ticks`} (limit ${R.volatility.dropPct}%)`,
         });
         addSell(p.asset, p.usd, true);
       }

@@ -14,7 +14,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { evaluate, freshState } from "./engine.mjs";
 import { startDashboard } from "./dashboard.mjs";
-import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel } from "./shapes.mjs";
+import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel, screenPrices } from "./shapes.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -34,6 +34,7 @@ if (process.env.JAGA_LOG === "json") {
 const CONFIG_PATH = opt("--config", "config.json");
 const STATE_PATH = opt("--state", "state.json");
 const AUDIT_PATH = opt("--audit", "audit.jsonl");
+const AUDIT_MAX_BYTES = Number(opt("--audit-max-mb", 50)) * 1024 * 1024; // rotate to .1 past this; the hash chain continues across files
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function loadJson(path, fallback) {
@@ -59,6 +60,9 @@ function audit(entry) {
   const rec = { ts: new Date().toISOString(), ...entry, prev: lastHash };
   rec.hash = createHash("sha256").update(JSON.stringify(rec)).digest("hex");
   lastHash = rec.hash;
+  try {
+    if (fs.statSync(AUDIT_PATH).size >= AUDIT_MAX_BYTES) fs.renameSync(AUDIT_PATH, AUDIT_PATH + ".1"); // new file's first prev = old file's head
+  } catch {}
   fs.appendFileSync(AUDIT_PATH, JSON.stringify(rec) + "\n");
   return rec;
 }
@@ -91,10 +95,22 @@ async function loadStepSizes(mcp, cfg) {
   }
 }
 
-async function takeSnapshot(mcp, cfg) {
+async function takeSnapshot(mcp, cfg, ctx) {
   const a = cfg.tools.args ?? {};
   const balances = parseBalances(toolResult(await mcp.callTool({ name: cfg.tools.account, arguments: a.account ?? {} })));
-  const prices = parsePrices(toolResult(await mcp.callTool({ name: cfg.tools.prices, arguments: a.prices ?? {} })));
+  const raw = parsePrices(toolResult(await mcp.callTool({ name: cfg.tools.prices, arguments: a.prices ?? {} })));
+  let prices = raw;
+  if (ctx) {
+    const screened = screenPrices(ctx.lastPrices, raw, ctx.suspect, cfg.rules.maxTickJumpPct ?? 25);
+    prices = screened.prices;
+    ctx.suspect = screened.suspect;
+    for (const f of screened.flagged) {
+      console.log(`   ⚠️  suspect print ${f.symbol}: ${f.seen} vs last ${f.last} (${f.jumpPct}%) — holding last price one tick`);
+      audit({ type: "suspect-print", ...f });
+      ctx.dash?.emit({ type: "violation", rule: "suspect-print", text: `${f.symbol} ${f.seen} vs last ${f.last} (${f.jumpPct}% jump) — held one tick for confirmation` });
+    }
+    ctx.lastPrices = prices;
+  }
   return valueSnapshot(balances, prices, cfg.rules.quote);
 }
 
@@ -111,6 +127,15 @@ function damageAvoided(ledger, snapshot) {
 
 // --- Alerts (Discord / Slack-compatible webhook) ---------------------------
 async function alert(cfg, text) {
+  if (cfg.alerts?.ntfy) {
+    // ntfy.sh: free push notifications to a phone, no account — alerts.ntfy = "https://ntfy.sh/<your-topic>"
+    try {
+      const res = await fetch(cfg.alerts.ntfy, { method: "POST", headers: { Title: "Jaga", Priority: /PANIC|BLIND/.test(text) ? "urgent" : "high", Tags: "shield" }, body: text.slice(0, 4000), signal: AbortSignal.timeout(10000) });
+      if (!res.ok) console.error(`ntfy alert failed: HTTP ${res.status}`);
+    } catch (e) {
+      console.error("ntfy alert failed:", e.message);
+    }
+  }
   if (!cfg.alerts?.webhook) return;
   try {
     const res = await fetch(cfg.alerts.webhook, {
@@ -177,7 +202,7 @@ async function threatAssessment(cfg, snapshot, state, rules) {
     return await askLLM(
       cfg,
       "You are Jaga's analyst. Given portfolio snapshot, price history and active risk rules, write a threat assessment. First line exactly 'LEVEL: LOW' or 'LEVEL: MEDIUM' or 'LEVEL: HIGH'. Then the single biggest exposure and what rule is closest to tripping. Max 80 words, terse.",
-      { snapshot, history: state.history, entries: state.entries, peak: state.peak, rules }
+      { snapshot, history: Object.fromEntries(Object.entries(state.history).map(([k, v]) => [k, v.map((h) => h.p ?? h)])), entries: state.entries, peak: state.peak, rules }
     );
   } catch (e) {
     console.error("LLM advisor failed:", e.message);
@@ -343,7 +368,11 @@ async function onDecision(ctx, id, approve) {
 }
 
 function persist(ctx) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify({ engine: ctx.state, ledger: ctx.ledger }, null, 2));
+  // write-then-rename: a crash mid-write can never leave a half-written state.json
+  // (which would silently reset peak, cost basis and the ledger on restart)
+  const tmp = STATE_PATH + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify({ engine: ctx.state, ledger: ctx.ledger }, null, 2));
+  fs.renameSync(tmp, STATE_PATH);
 }
 
 // --- Jaga as an MCP server -------------------------------------------------
@@ -424,7 +453,7 @@ function jagaMcpHandler(ctx) {
 // --- Main loop -------------------------------------------------------------
 async function tick(ctx) {
   const { mcp, cfg, dash } = ctx;
-  const snapshot = await takeSnapshot(mcp, cfg);
+  const snapshot = await takeSnapshot(mcp, cfg, ctx);
   snapshot.ts = Date.now();
   const { violations, actions, state, headroom } = evaluate(snapshot, cfg.rules, ctx.state);
   ctx.state = state;
@@ -508,6 +537,8 @@ async function main() {
     steps: {},
     inflight: null,
     headroom: [],
+    lastPrices: null,
+    suspect: new Set(),
     last: null,
     lastViolations: [],
     lastTickAt: null,

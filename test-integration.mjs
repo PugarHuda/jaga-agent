@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel } from "./shapes.mjs";
+import { toolResult, parseBalances, parsePrices, valueSnapshot, validateConfig, parseStepSizes, floorToStep, parseThreatLevel, screenPrices } from "./shapes.mjs";
 import { verifyAudit } from "./audit-verify.mjs";
 
 let checks = 0;
@@ -65,6 +65,33 @@ ok(floorToStep(0.0003, 0.0001) === 0.0003 && floorToStep(1.5, 0.5) === 1.5, "exa
 ok(floorToStep(0.00009, 0.0001) === 0, "below one step → 0");
 eq(parseThreatLevel("LEVEL: MEDIUM\nBiggest exposure…"), "MEDIUM", "threat level parsed");
 eq(parseThreatLevel("nothing here"), null, "no level → null");
+
+// --- price sanity screen: one bad print is held, a confirmed move is accepted ---------
+let sc = screenPrices({ ETHUSDC: 2500, BTCUSDC: 80000 }, { ETHUSDC: 25, BTCUSDC: 80100 }, new Set());
+ok(sc.prices.ETHUSDC === 2500 && sc.prices.BTCUSDC === 80100 && sc.suspect.has("ETHUSDC") && sc.flagged[0].jumpPct === 99, "a 99% jump is held at the last price and flagged; a 0.1% move passes");
+sc = screenPrices({ ETHUSDC: 2500 }, { ETHUSDC: 25 }, sc.suspect);
+ok(sc.prices.ETHUSDC === 25 && sc.suspect.size === 0, "the same level on the next tick is confirmed and accepted");
+sc = screenPrices({ ETHUSDC: 2500 }, { ETHUSDC: 2510 }, new Set(["ETHUSDC"]));
+ok(sc.prices.ETHUSDC === 2510 && sc.flagged.length === 0, "a glitch that goes away leaves no trace");
+sc = screenPrices(null, { ETHUSDC: 1 }, new Set());
+ok(sc.prices.ETHUSDC === 1 && sc.flagged.length === 0, "first tick has nothing to compare against");
+
+// --- audit rotation: the chain continues into the .1 file ------------------------------
+const rot = path.join(os.tmpdir(), `jaga-rot-${process.pid}.jsonl`);
+let rp = "";
+const mk = (type) => {
+  const rec = { ts: "t", type, prev: rp };
+  rec.hash = createHash("sha256").update(JSON.stringify(rec)).digest("hex");
+  rp = rec.hash;
+  return JSON.stringify(rec);
+};
+fs.writeFileSync(rot + ".1", [mk("tick"), mk("tick")].join("\n") + "\n");
+fs.writeFileSync(rot, [mk("action"), mk("tick")].join("\n") + "\n");
+ok(verifyAudit(rot).ok, "a rotated trail verifies across both files");
+fs.writeFileSync(rot + ".1", [mk("tick")].join("\n") + "\n"); // older file replaced → link broken
+ok(!verifyAudit(rot).ok && verifyAudit(rot).line === 1, "a tampered older file breaks the link at line 1 of the new one");
+fs.rmSync(rot, { force: true });
+fs.rmSync(rot + ".1", { force: true });
 
 // --- config validation: a missing rule must fail loud, not silently never fire
 const good = JSON.parse(fs.readFileSync("config.demo.json", "utf8"));
@@ -194,6 +221,8 @@ try {
   authCfg.dashboard = { port: DPORT, host: "127.0.0.1", token: "correct-horse-battery-staple" };
   authCfg.rules.mode = "propose";
   authCfg.intervalSec = 1;
+  const topic = `jaga-ci-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  authCfg.alerts = { ntfy: `https://ntfy.sh/${topic}` }; // a real push-notification service, no account needed
   const noToken = structuredClone(authCfg);
   noToken.dashboard = { port: DPORT, host: "0.0.0.0" };
   ok(validateConfig(noToken).some((e) => /token/.test(e)), "binding beyond loopback without a token is rejected by config validation");
@@ -229,6 +258,16 @@ try {
     await good.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), { requestInit: { headers: { authorization: "Bearer correct-horse-battery-staple" } } }));
     const tools = (await good.listTools()).tools;
     ok(tools.some((t) => t.name === "risk_status"), "MCP with bearer works (claude mcp add --header)");
+    // the replay crash trips a rule within seconds → a real push notification lands on ntfy.sh
+    let pushed = null;
+    for (let i = 0; i < 45 && !pushed; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const txt = await (await fetch(`https://ntfy.sh/${topic}/json?poll=1`, { signal: AbortSignal.timeout(8000) })).text();
+        pushed = txt.split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((m) => m.event === "message" && /Jaga/.test(m.message));
+      } catch {}
+    }
+    ok(pushed && pushed.title === "Jaga" && /\[(stop-loss|trailing-stop|circuit-breaker|max-position|max-drawdown|daily-loss|max-exposure)\]/.test(pushed.message), "ntfy.sh received the intervention push (title, rule in body)");
     ok(tools.every((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === false), "every Jaga tool is annotated read-only per the MCP spec");
     ok(/read-only/.test(good.getInstructions() ?? ""), "server instructions tell clients everything is read-only");
     await good.close();

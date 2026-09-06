@@ -163,4 +163,21 @@ ok(hr["max-drawdown:*"].limit === 10 && Math.abs(hr["max-drawdown:*"].value - 1.
 ok(hr["daily-loss:*"] === undefined, "rules that aren't configured have no gauge");
 ok(r.headroom[0].rule === "trailing-stop" || r.headroom[0].rule === "max-position", "hottest rule sorts first");
 
+// 19. Time-based volatility window: seconds, not ticks (stop-loss relaxed so only the breaker is under test)
+const tv = { ...rules, stopLossPct: 50, volatility: { windowSec: 60, dropPct: 6 } };
+const T = Date.UTC(2026, 8, 6, 12, 0, 0);
+st = freshState();
+r = evaluate({ ...snap([pos("BTC", 100000, 100)], 900), ts: T }, tv, st);
+r = evaluate({ ...snap([pos("BTC", 99000, 99)], 900), ts: T + 20e3 }, tv, r.state);
+r = evaluate({ ...snap([pos("BTC", 93500, 93.5)], 900), ts: T + 50e3 }, tv, r.state); // -6.5% inside 50s
+ok(r.violations.some((v) => v.rule === "circuit-breaker") && /within 50s/.test(r.violations.find((v) => v.rule === "circuit-breaker").detail), "circuit breaker measures seconds when windowSec is set");
+st = freshState();
+r = evaluate({ ...snap([pos("BTC", 100000, 100)], 900), ts: T }, tv, st);
+r = evaluate({ ...snap([pos("BTC", 97000, 97)], 900), ts: T + 90e3 }, tv, r.state); // first sample aged out (90s > 60s)
+r = evaluate({ ...snap([pos("BTC", 94000, 94)], 900), ts: T + 120e3 }, tv, r.state); // -3.1% vs the 97000 sample still in window
+ok(!r.violations.some((v) => v.rule === "circuit-breaker"), "samples older than windowSec age out — a slow bleed is not a flash crash");
+ok(r.state.history.BTC.length === 2 && r.state.history.BTC.every((h) => typeof h.p === "number" && typeof h.t === "number"), "history carries timestamps and drops aged-out samples");
+r = evaluate({ ...snap([pos("BTC", 96000, 96)], 900), ts: T + 121e3 }, tv, { ...r.state, history: { BTC: [100000, 97000] } }); // legacy state shape
+ok(r.state.history.BTC.every((h) => typeof h.p === "number"), "legacy bare-number history is upgraded without crashing");
+
 console.log(`✅ all ${checks} risk-engine checks passed`);

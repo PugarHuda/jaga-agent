@@ -9,7 +9,7 @@
   "intervalSec": 30,
   "dashboard": { "port": 7777, "_remote": "to expose beyond localhost (Docker, a VPS): \"host\": \"0.0.0.0\" plus \"token\": \"<16+ chars>\" (or env JAGA_DASHBOARD_TOKEN); open /?token=… once in the browser, send Authorization: Bearer for curl/MCP" },
   "advisor": { "everyTicks": 20 },
-  "alerts": { "webhook": "https://discord.com/api/webhooks/... (optional)" },
+  "alerts": { "webhook": "https://discord.com/api/webhooks/... (optional)", "ntfy": "https://ntfy.sh/<your-secret-topic> (optional: free push to your phone via the ntfy app)" },
   "llm": {
     "_comment": "OpenAI-compatible. Key via env: LLM_API_KEY / OPENROUTER_API_KEY / VENICE_API_KEY",
     "baseUrl": "https://openrouter.ai/api/v1",
@@ -24,7 +24,8 @@
     "trailingStopPct": 5,
     "takeProfitPct": 15,
     "minTradeUsd": 10,
-    "volatility": { "window": 10, "dropPct": 6 },
+    "volatility": { "windowSec": 300, "dropPct": 6 },
+    "maxTickJumpPct": 25,
     "maxExposurePct": 80,
     "maxDailyLossPct": 5,
     "assets": { "BTC": { "stopLossPct": 10 } },

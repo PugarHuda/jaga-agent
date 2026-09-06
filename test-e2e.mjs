@@ -128,7 +128,8 @@ try {
   const reject = page.getByRole("button", { name: "❌ Reject" }).first();
   await reject.waitFor({ state: "visible", timeout: 60000 });
   const executedBefore = (out.match(/EXECUTED/g) || []).length;
-  await reject.click();
+  await reject.focus();
+  await page.keyboard.press("Space"); // keyboard-only users can reject too
   await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "rejected"), null, { timeout: 10000 });
   ok(true, "rejection shows in the feed");
   await new Promise((r) => setTimeout(r, 1500));
@@ -161,6 +162,8 @@ try {
   fs.writeFileSync(cfgPath, JSON.stringify(cfg));
   await page.waitForFunction(() => document.getElementById("pos").textContent.includes("/ 30%"), null, { timeout: 15000 });
   ok(/rules reloaded/.test(out), "config change picked up without restart");
+  await page.waitForFunction(() => [...document.querySelectorAll("#hr tr")].some((tr) => tr.textContent.includes("max-position") && tr.textContent.includes("/ 30%")), null, { timeout: 15000 });
+  ok(true, "headroom panel re-reads the new limit too");
   fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg, rules: { ...cfg.rules, mode: "yolo" } }));
   await page.waitForFunction(() => [...document.querySelectorAll("#feed .badge")].some((b) => b.textContent === "config-rejected"), null, { timeout: 15000 });
   ok(/config change rejected/.test(out), "invalid config edit rejected, old rules kept");
@@ -226,6 +229,8 @@ try {
   // responsive: narrow viewport stacks the columns, no horizontal scroll
   await page.setViewportSize({ width: 420, height: 800 });
   ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), "no horizontal overflow on mobile width");
+  const panicBox = await page.getByRole("button", { name: "🚨 De-risk everything" }).boundingBox();
+  ok(panicBox && panicBox.x >= 0 && panicBox.x + panicBox.width <= 420 && panicBox.y < 200, "panic button stays on-screen near the top on a phone");
 
   console.log(`✅ all ${checks} e2e checks passed`);
 } finally {

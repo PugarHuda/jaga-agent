@@ -10,6 +10,11 @@ export function verifyAudit(path = "audit.jsonl") {
   for (let i = 0; i < lines.length; i++) {
     const rec = JSON.parse(lines[i]);
     const { hash, ...rest } = rec;
+    if (i === 0 && rest.prev !== "" && fs.existsSync(path + ".1")) {
+      // rotated: this file must start where the previous one ended
+      const older = fs.readFileSync(path + ".1", "utf8").trim().split("\n");
+      prev = JSON.parse(older.at(-1)).hash;
+    }
     if (rest.prev !== prev) return { ok: false, line: i + 1, reason: "broken link to previous entry" };
     const want = createHash("sha256").update(JSON.stringify(rest)).digest("hex");
     if (hash !== want) return { ok: false, line: i + 1, reason: "hash mismatch (entry modified)" };

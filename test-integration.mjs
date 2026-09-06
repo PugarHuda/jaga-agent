@@ -109,6 +109,14 @@ fs.writeFileSync(rot, [mk("action"), mk("tick")].join("\n") + "\n");
 ok(verifyAudit(rot).ok, "a rotated trail verifies across both files");
 fs.writeFileSync(rot + ".1", [mk("tick")].join("\n") + "\n"); // older file replaced → link broken
 ok(!verifyAudit(rot).ok && verifyAudit(rot).line === 1, "a tampered older file breaks the link at line 1 of the new one");
+// three files: the chain must follow the NEWEST rotated file, and rotation must not overwrite
+rp = "";
+fs.writeFileSync(rot + ".1", [mk("start"), mk("tick")].join("\n") + "\n");
+fs.writeFileSync(rot + ".2", [mk("tick"), mk("violation")].join("\n") + "\n");
+fs.writeFileSync(rot, [mk("action"), mk("tick")].join("\n") + "\n");
+ok(verifyAudit(rot).ok, "a trail rotated twice verifies through .1 and .2 in order");
+fs.rmSync(rot + ".2", { force: true });
+ok(!verifyAudit(rot).ok, "losing the newest rotated file breaks the chain instead of passing quietly");
 fs.rmSync(rot, { force: true });
 fs.rmSync(rot + ".1", { force: true });
 
@@ -124,6 +132,7 @@ ok(errs.some((e) => e.includes("stopLossPct")), "missing rule reported");
 ok(errs.some((e) => e.includes("mode")), "bad mode reported");
 ok(errs.some((e) => e.includes("window")), "bad window reported");
 ok(validateConfig({}).length >= 5, "empty config is loudly invalid");
+ok(validateConfig({ ...good, intervalSec: "5" }).some((e) => /intervalSec/.test(e)), "intervalSec as a string is rejected, not coerced");
 
 // --- audit hash chain: tampering is detected at the exact line ---------------
 const tmp = path.join(os.tmpdir(), `jaga-audit-${process.pid}.jsonl`);
@@ -200,6 +209,20 @@ try {
   ok(qtySell.status === "FILLED" && Math.abs(qtySell.executedQty - exact) < 1e-9, "floored full quantity fills exactly (no over-ask)");
   const ethLeft = parseBalances(toolResult(await a.callTool({ name: "get_account", arguments: {} }))).find((x) => x.asset === "ETH")?.free ?? 0;
   ok(ethLeft < steps.ETHUSDC, "only sub-step dust remains after a quantity full sell");
+
+  // two agents, one wallet: concurrent orders must settle one at a time or both pass
+  // the balance check and overdraw the account
+  const freeNow = parseBalances(toolResult(await a.callTool({ name: "get_account", arguments: {} }))).find((x) => x.asset === "USDC").free;
+  const each = Math.round(freeNow * 0.7 * 100) / 100;
+  const both = (
+    await Promise.all([
+      a.callTool({ name: "place_order", arguments: { symbol: "ETHUSDC", side: "BUY", type: "MARKET", quoteOrderQty: each } }),
+      b.callTool({ name: "place_order", arguments: { symbol: "BTCUSDC", side: "BUY", type: "MARKET", quoteOrderQty: each } }),
+    ])
+  ).map(toolResult);
+  const usdcAfter = parseBalances(toolResult(await a.callTool({ name: "get_account", arguments: {} }))).find((x) => x.asset === "USDC").free;
+  eq(both.map((r) => r.status).sort().join(","), "FILLED,REJECTED", "two agents spending 70% each: one fills, one is refused");
+  ok(usdcAfter >= 0 && Math.abs(usdcAfter - (freeNow - each)) < 0.01, "the shared wallet never goes negative");
   await a.close();
   await b.close();
 } finally {

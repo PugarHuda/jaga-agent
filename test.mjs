@@ -184,4 +184,17 @@ ok(r.state.history.BTC.length === 2 && r.state.history.BTC.every((h) => typeof h
 r = evaluate({ ...snap([pos("BTC", 96000, 96)], 900), ts: T + 121e3 }, tv, { ...r.state, history: { BTC: [100000, 97000] } }); // legacy state shape
 ok(r.state.history.BTC.every((h) => typeof h.p === "number"), "legacy bare-number history is upgraded without crashing");
 
+// 20. Circuit breaker measures the drop from the window high, not from its first sample
+const cb = { ...rules, stopLossPct: 50, trailingStopPct: 50, volatility: { window: 4, dropPct: 6 } };
+st = freshState();
+r = evaluate(snap([pos("BTC", 100000, 100)], 900), cb, st);
+r = evaluate(snap([pos("BTC", 110000, 110)], 900), cb, r.state); // spike
+r = evaluate(snap([pos("BTC", 101000, 101)], 900), cb, r.state); // -8.2% off the spike, +1% vs the first sample
+ok(r.violations.some((v) => v.rule === "circuit-breaker"), "a crash back through a spike inside the window trips the breaker");
+ok(/from 110000/.test(r.violations.find((v) => v.rule === "circuit-breaker").detail), "the detail names the high it crashed from");
+st = freshState();
+r = evaluate(snap([pos("BTC", 100000, 100)], 900), cb, st);
+r = evaluate(snap([pos("BTC", 98000, 98)], 900), cb, r.state);
+ok(!r.violations.some((v) => v.rule === "circuit-breaker"), "an ordinary 2% dip still does not");
+
 console.log(`✅ all ${checks} risk-engine checks passed`);

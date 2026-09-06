@@ -67,7 +67,12 @@ function audit(entry) {
   rec.hash = createHash("sha256").update(JSON.stringify(rec)).digest("hex");
   lastHash = rec.hash;
   try {
-    if (fs.statSync(AUDIT_PATH).size >= AUDIT_MAX_BYTES) fs.renameSync(AUDIT_PATH, AUDIT_PATH + ".1"); // new file's first prev = old file's head
+    if (fs.statSync(AUDIT_PATH).size >= AUDIT_MAX_BYTES) {
+      // .1, .2, .3 … — an audit trail you silently overwrite is not an audit trail
+      let n = 1;
+      while (fs.existsSync(`${AUDIT_PATH}.${n}`)) n++;
+      fs.renameSync(AUDIT_PATH, `${AUDIT_PATH}.${n}`); // new file's first prev = this file's head
+    }
   } catch {}
   fs.appendFileSync(AUDIT_PATH, JSON.stringify(rec) + "\n");
   return rec;

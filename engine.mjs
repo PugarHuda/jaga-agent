@@ -147,14 +147,18 @@ export function evaluate(snapshot, rules, state) {
 
     // 5. volatility circuit breaker: flash-crash inside the rolling window
     if (R.volatility && hist.length >= 2) {
-      const windowDropPct = ((hist[0].p - p.price) / hist[0].p) * 100;
+      // from the window's HIGH, not its first sample: a spike then a crash back through
+      // it is exactly the flash crash this rule exists for, and with windowSec the
+      // oldest sample keeps ageing out from under a first-sample comparison
+      const windowHigh = Math.max(...hist.map((h) => h.p));
+      const windowDropPct = ((windowHigh - p.price) / windowHigh) * 100;
       gauge("circuit-breaker", p.asset, windowDropPct, R.volatility.dropPct);
       if (windowDropPct >= R.volatility.dropPct) {
         violations.push({
           rule: "circuit-breaker",
           asset: p.asset,
           severity: "high",
-          detail: `${p.asset} crashed ${windowDropPct.toFixed(1)}% within ${R.volatility.windowSec ? `${Math.round((now - hist[0].t) / 1000)}s` : `${hist.length} ticks`} (limit ${R.volatility.dropPct}%)`,
+          detail: `${p.asset} crashed ${windowDropPct.toFixed(1)}% from ${windowHigh.toFixed(2)} within ${R.volatility.windowSec ? `${Math.round((now - hist[0].t) / 1000)}s` : `${hist.length} ticks`} (limit ${R.volatility.dropPct}%)`,
         });
         addSell(p.asset, p.usd, true);
       }

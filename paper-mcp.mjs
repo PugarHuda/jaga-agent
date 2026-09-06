@@ -15,6 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { serializer } from "./shapes.mjs";
 
 const args = process.argv.slice(2);
 const HTTP_PORT = args.includes("--http") ? Number(args[args.indexOf("--http") + 1] || 7788) : 0;
@@ -30,6 +31,7 @@ const QUOTE = opt("--quote", "USDC").toUpperCase(); // --quote USDT with --symbo
 const SYMBOLS = [...new Set([...opt("--symbols", `BTC${QUOTE},ETH${QUOTE},BNB${QUOTE},SOL${QUOTE}`).split(",").map((s) => s.trim().toUpperCase()).filter(Boolean), "USDCUSDT"])];
 for (const s of SYMBOLS) if (s !== "USDCUSDT" && !s.endsWith(QUOTE)) throw new Error(`symbol ${s} is not quoted in ${QUOTE} — pass --quote to match your --symbols`);
 const TAKER_FEE = 0.001; // Binance spot default tier, 0.1%
+const only = serializer(); // orders settle one at a time, like a real matching engine
 
 const account = {
   balances: [
@@ -216,7 +218,9 @@ function buildServer() {
       annotations: { title: "Place order", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     async (o) => {
-      const r = await placeOrder(o);
+      // every connected agent shares this wallet and placeOrder awaits the book —
+      // interleaved orders would both pass the balance check and overdraw it
+      const r = await only(() => placeOrder(o));
       console.error(`${r.status === "FILLED" ? "📗" : "📕"} ${o.side} ${o.symbol} ${o.quantity !== undefined ? `qty ${o.quantity}` : `${o.quoteOrderQty.toFixed(2)}`} → ${r.status}${r.fillPrice ? ` @ ${r.fillPrice.toFixed(2)} (slip ${r.slippagePct.toFixed(3)}%, fee ${r.fee.toFixed(6)} ${r.feeAsset})` : ` (${r.reason})`}`);
       return json(r);
     }

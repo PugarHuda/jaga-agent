@@ -2,6 +2,7 @@
 // reordered line breaks the chain from that point on. Run: npm run audit:verify
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 
 export function verifyAudit(path = "audit.jsonl") {
@@ -10,10 +11,15 @@ export function verifyAudit(path = "audit.jsonl") {
   for (let i = 0; i < lines.length; i++) {
     const rec = JSON.parse(lines[i]);
     const { hash, ...rest } = rec;
-    if (i === 0 && rest.prev !== "" && fs.existsSync(path + ".1")) {
-      // rotated: this file must start where the previous one ended
-      const older = fs.readFileSync(path + ".1", "utf8").trim().split("\n");
-      prev = JSON.parse(older.at(-1)).hash;
+    if (i === 0 && rest.prev !== "") {
+      // rotated: this file must start where the newest rotated file (.1, .2, ...) ended
+      const dir = nodePath.dirname(path) || ".";
+      const base = nodePath.basename(path);
+      const older = fs
+        .readdirSync(dir)
+        .filter((f) => f.startsWith(base + ".") && /^\d+$/.test(f.slice(base.length + 1)))
+        .sort((x, y) => Number(x.slice(base.length + 1)) - Number(y.slice(base.length + 1)));
+      if (older.length) prev = JSON.parse(fs.readFileSync(nodePath.join(dir, older.at(-1)), "utf8").trim().split("\n").at(-1)).hash;
     }
     if (rest.prev !== prev) return { ok: false, line: i + 1, reason: "broken link to previous entry" };
     const want = createHash("sha256").update(JSON.stringify(rest)).digest("hex");

@@ -80,7 +80,7 @@ export function validateConfig(cfg) {
   if (typeof r.quote !== "string" || !/^[A-Z0-9]{2,10}$/.test(r.quote)) errs.push("rules.quote must be an asset symbol like USDC");
   if (!cfg?.mcp?.url && !cfg?.mcp?.command) errs.push("mcp.url or mcp.command is required");
   for (const k of ["account", "prices", "order"]) if (typeof cfg?.tools?.[k] !== "string") errs.push(`tools.${k} (MCP tool name) is required`);
-  if (cfg?.intervalSec !== undefined && !(cfg.intervalSec >= 1)) errs.push("intervalSec must be >= 1");
+  if (cfg?.intervalSec !== undefined && !(Number.isFinite(cfg.intervalSec) && cfg.intervalSec >= 1)) errs.push("intervalSec must be a number >= 1");
   const d = cfg?.dashboard;
   if (d?.host && !/^(127\.0\.0\.1|localhost|::1)$/.test(d.host) && !(d.token || process.env.JAGA_DASHBOARD_TOKEN))
     errs.push("dashboard.host binds beyond loopback — set dashboard.token (or JAGA_DASHBOARD_TOKEN) so approvals/panic/MCP need auth");

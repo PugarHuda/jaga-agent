@@ -4,7 +4,7 @@
 
 - [x] Repo pushed: https://github.com/PugarHuda/jaga-agent
 - [ ] Follow @Binance + repost the announcement post
-- [x] Video recorded: `jaga-demo.mp4` (118s, silent dashboard capture: paper 50s + demo 65s). Add voice-over per script below, or upload as-is.
+- [x] Video recorded: `jaga-demo.mp4` (v5, narrated: hook, live paper mode, the real Aug-2024 crash replay, the idea, close). Its claims — 8 rules, 150+ checks, 0 LLM calls in the trade path, MCP client + server — all still hold at 187 checks, so it needs no re-render.
 - [ ] Reply/quote-repost with video + GitHub link (draft below)
 - [ ] Complete the survey: app.binance.com/uni-qr/user-survey/2913aa200aac462c89a737779393f3d4
 - [ ] Track B: SKIPPED by decision (no Binance account connection). Track A only.
@@ -31,7 +31,7 @@ Before re-recording: `OPENROUTER_API_KEY` is already set as a Windows user env v
 
 ## Notes
 
-- 2026-09-06 hardening pass: sequential guard loop (no double sells), LLM timeout off the critical path, config validation, shape normalizers, SHA-256 audit chain + `npm run audit:verify`, Jaga as MCP server (`/mcp`, registered in Claude Code as `jaga`), paper mode = HTTP MCP server with WebSocket prices + order-book fills + real rogue MCP client (`--llm` = LLM under prompt injection). Tests: 18 engine + 31 integration + 18 Playwright e2e. Video v5: real Aug 2024 crash replay + narration says 8 rules, 150+ checks.
+- 2026-09-06 hardening pass: sequential guard loop (no double sells), LLM timeout off the critical path, config validation, shape normalizers, SHA-256 audit chain + `npm run audit:verify`, Jaga as MCP server (`/mcp`, registered in Claude Code as `jaga`), paper mode = HTTP MCP server with WebSocket prices + order-book fills + real rogue MCP client (`--llm` = LLM under prompt injection). Tests then: 18 + 31 + 18. Now 56 engine + 90 integration + 41 Playwright e2e. Video v5: real Aug 2024 crash replay + narration says 8 rules, 150+ checks.
 
 - Network: Binance domains are blocked on Telkomsel — use VPN/alt DNS for the real-MCP config and Track B.
 ## Track B — step by step (VPN on; verified 2026-09-06)
@@ -44,4 +44,4 @@ Official endpoint: `https://agent.binance.com/mcp/agentic` (Streamable HTTP, OAu
 4. In Claude Code (new session so the tools load): "Use the Binance MCP Server to show BTCUSDT price and 24h change" (proves connect), then "show my Agentic subaccount balance", then "market buy $6 of BTC with USDC on spot" → confirm when it restates the order. That's the qualifying Track B trade. Screenshot it.
 5. Survey (mandatory for both tracks), follow + repost if not done.
 6. Bonus — Jaga guarding the real subaccount: copy the access token from Claude Code's MCP credentials (`~/.claude/.credentials.json` → mcpOAuth → binance-mcp-server), then
-   `cp config.binance.example.json config.json`, `set MCP_BEARER_TOKEN=...`, `node jaga.mjs --config config.json --list-tools` → map real tool names into `config.tools`, keep `"mode": "propose"`, `npm start`. The real server's account/price response shapes may differ from the mock — `takeSnapshot()` in jaga.mjs is the one place to adapt.
+   `cp config.binance.example.json config.json`, `set MCP_BEARER_TOKEN=...`, `node jaga.mjs --config config.json --list-tools` → map real tool names into `config.tools`, keep `"mode": "propose"`, `npm start`. The real server's account/price response shapes may differ from the paper server's — `parseBalances`/`parsePrices` in shapes.mjs already normalise the common ones, and `takeSnapshot()` in jaga.mjs is the one place to adapt.

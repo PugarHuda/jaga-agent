@@ -6,7 +6,7 @@ Everyone is building agents that **trade**. Jaga is the agent that **guards** �
 
 Built for the **Binance Agent OS Mini Hackathon** (Track A). [![ci](https://github.com/PugarHuda/jaga-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/PugarHuda/jaga-agent/actions/workflows/ci.yml)
 
-![Jaga live dashboard — paper mode on live Binance prices: a rogue agent keeps pushing ETH past the 40% cap, Jaga trims it back every time](dashboard.png)
+![Jaga live dashboard — replaying the Aug 2024 crash: a rogue agent pushes ETH to 56.8% of the book, Jaga trims it back, the rule-headroom panel shows what is closest to tripping, and the AI analyst explains the incident after the fact](dashboard.png)
 *`npm run paper`, live shot: real Binance prices over WebSocket, a real second agent buying ETH through the same MCP server, Jaga trimming it back under the 40% cap through MCP — 5 interventions, audit chain intact.*
 
 ## The one idea that matters

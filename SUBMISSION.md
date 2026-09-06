@@ -16,7 +16,7 @@ Before re-recording: `OPENROUTER_API_KEY` is already set as a Windows user env v
 
 1. **(0:00–0:15) Hook.** "Binance Agent OS lets AI agents trade your money. Binance's own VP admits they can't see *why* an agent trades. So what happens when your agent gets prompt-injected or just goes rogue? This is Jaga — the agent that guards the agents."
 2. **(0:15–1:00) Live demo.** `npm run paper`. Point at the dashboard: "These are LIVE Binance prices, right now, over the official public data API. That red log line is a compromised trading agent piling my portfolio into ETH — 60% concentration. Watch Jaga: detects the breach, executes the trim back to 40% through MCP, logs it to the audit trail, and the AI analyst writes the incident report." (If the live market is too quiet for stop-losses, cut to `npm run demo` for the crash: "and in a simulated crash — stop-loss, circuit breaker, full de-risk to USDC, automatically.")
-3. **(1:00–1:20) The idea.** Show `engine.mjs` for 5 seconds: "The risk engine is a pure function — eight rules, 170-plus tests, zero LLM in the trade path. Code enforces, AI explains. It's MCP-native, so it points at the official Agent OS server with a config change."
+3. **(1:00–1:20) The idea.** Show `engine.mjs` for 5 seconds: "The risk engine is a pure function — eight rules, 185-plus tests, zero LLM in the trade path. Code enforces, AI explains. It's MCP-native, so it points at the official Agent OS server with a config change."
 4. **(1:20–1:30) Close.** "Jaga — Indonesian for 'to guard'. Repo in the reply. Give your trading agent a bodyguard."
 
 ## Tweet reply draft

@@ -198,7 +198,7 @@ async function narrate(cfg, snapshot, violations, actions, mode) {
     return (
       (await askLLM(
         cfg,
-        "You are Jaga, a crypto portfolio risk guardian. Write a terse incident report (max 120 words): what tripped, what action is being taken, and one sentence of market-context advice. No hedging, no disclaimers.",
+        "You are Jaga, a crypto portfolio risk guardian. Write a terse incident report (max 120 words) as plain prose: what tripped, what action is being taken, and one sentence of market-context advice. No headings, no markdown, no bullet lists, no date or placeholder fields like [Insert X], no hedging, no disclaimers. The report is shown on a dashboard and pushed to a phone.",
         { snapshot, violations, actions, mode }
       )) ?? plain
     );

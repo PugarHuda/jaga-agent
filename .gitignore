@@ -3,6 +3,8 @@ state.json
 config.json
 .env
 audit.jsonl
+audit.jsonl.*
+state.json.tmp
 demo.log
 .playwright-mcp/
 paper.log

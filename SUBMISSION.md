@@ -31,7 +31,7 @@ Before re-recording: `OPENROUTER_API_KEY` is already set as a Windows user env v
 
 ## Notes
 
-- 2026-09-06 hardening pass: sequential guard loop (no double sells), LLM timeout off the critical path, config validation, shape normalizers, SHA-256 audit chain + `npm run audit:verify`, Jaga as MCP server (`/mcp`, registered in Claude Code as `jaga`), paper mode = HTTP MCP server with WebSocket prices + order-book fills + real rogue MCP client (`--llm` = LLM under prompt injection). Tests: 18 engine + 31 integration + 18 Playwright e2e. The demo video predates this pass; the dashboard now also shows limits per card.
+- 2026-09-06 hardening pass: sequential guard loop (no double sells), LLM timeout off the critical path, config validation, shape normalizers, SHA-256 audit chain + `npm run audit:verify`, Jaga as MCP server (`/mcp`, registered in Claude Code as `jaga`), paper mode = HTTP MCP server with WebSocket prices + order-book fills + real rogue MCP client (`--llm` = LLM under prompt injection). Tests: 18 engine + 31 integration + 18 Playwright e2e. Video re-rendered after this pass (paper footage from the new stack).
 
 - Network: Binance domains are blocked on Telkomsel — use VPN/alt DNS for the real-MCP config and Track B.
 ## Track B — step by step (VPN on; verified 2026-09-06)
